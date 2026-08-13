@@ -22,7 +22,7 @@
 - Camoufox 浏览器，支持多 worker 和异常进程清理
 - 支持 Cloudflare、DuckMail / Mail.tm、YYDS、MailNest、OutlookEmail、CloudMail
 - 注册完成后生成 CPA / Grok2API JSON
-- Grok Build 导入成功后可通过持久 Webhook 通知 Grok Account Monitor
+- Grok Build 导入成功后可通过持久 Webhook 通知 GrokIQ
 - JSON 查看、复制和下载
 - 首次访问创建唯一管理员账号
 - Docker Compose 部署，支持无桌面 Linux 服务器
@@ -81,9 +81,9 @@ Docker 首次生成 `data/config.json` 时会预填该内部地址；已有配�
 
 OutlookEmail 数据保存在 `outlookemail-data/`，并已被 Git 和 Docker 构建上下文忽略。完整配置见 [DEPLOYMENT.md](DEPLOYMENT.md#可选-outlookemail-邮箱池)。
 
-## 与 Grok Account Monitor 联动
+## 与 GrokIQ 联动
 
-本项目可与 [Grok Account Monitor](https://github.com/kaibush/grok-account-monitor) 统一编排。Grok Register 将账号成功导入 Grok2API 后，会通过持久 Webhook 通知 Monitor；Monitor 接收并去重账号事件，还可按设置自动执行首次质量探针。
+本项目可与 [GrokIQ](https://github.com/kaibush/grok-iq) 统一编排。Grok Register 将账号成功导入 Grok2API 后，会通过持久 Webhook 通知 GrokIQ；GrokIQ 接收并去重账号事件，还可按设置自动执行首次质量探针。
 
 ```text
 Grok Register 注册并导入 Grok2API
@@ -91,7 +91,7 @@ Grok Register 注册并导入 Grok2API
               └─ 持久 Webhook / 失败退避重试
                          │
                          ▼
-              Grok Account Monitor
+              GrokIQ
               接收账号 → 自动探针 → 风险与质量监控
 ```
 
@@ -101,34 +101,34 @@ Grok Register 注册并导入 Grok2API
 cp .env.example .env
 
 # 编辑 .env
-MONITOR_WEBHOOK_TOKEN=替换为随机长字符串
+GROKIQ_WEBHOOK_TOKEN=替换为随机长字符串
 ```
 
-随后使用两个 Compose 文件启动注册机、Monitor 后端和 Monitor 前端：
+随后使用两个 Compose 文件启动注册机、GrokIQ 后端和 GrokIQ 前端：
 
 ```bash
-docker compose -f compose.yaml -f compose.monitor.yaml pull
-docker compose -f compose.yaml -f compose.monitor.yaml up -d
+docker compose -f compose.yaml -f compose.grokiq.yaml pull
+docker compose -f compose.yaml -f compose.grokiq.yaml up -d
 ```
 
 默认访问地址：
 
 ```text
-Grok Register:       http://服务器IP:8787
-Grok Account Monitor: http://服务器IP:8091
+Grok Register: http://服务器IP:8787
+GrokIQ:        http://服务器IP:8091
 ```
 
-Monitor 前端通过容器内 Nginx 将 `/api` 请求转发至 `monitor-backend:8090`，因此 Monitor 后端端口无需暴露到宿主机。`8091` 默认监听所有网卡；使用反向代理时可在 `.env` 设置 `MONITOR_WEB_BIND=127.0.0.1`。
+GrokIQ 前端通过容器内 Nginx 将 `/api` 请求转发至 `grokiq-backend:8090`，因此 GrokIQ 后端端口无需暴露到宿主机。`8091` 默认监听所有网卡；使用反向代理时可在 `.env` 设置 `GROKIQ_WEB_BIND=127.0.0.1`。
 
 验证联动服务：
 
 ```bash
-docker compose -f compose.yaml -f compose.monitor.yaml ps
+docker compose -f compose.yaml -f compose.grokiq.yaml ps
 curl http://127.0.0.1:8091/api/health
-docker compose -f compose.yaml -f compose.monitor.yaml logs -f monitor-backend monitor-frontend
+docker compose -f compose.yaml -f compose.grokiq.yaml logs -f grokiq-backend grokiq-frontend
 ```
 
-首次启动后，在 Monitor 的“系统设置 → 联动与启动项”中保存联动 Token、首次探针方案和出口目标；再到 Grok Register 的“系统设置 → Grok2API”中启用账号监控联动并填写相同 Token。完整说明见 [DEPLOYMENT.md](DEPLOYMENT.md#与-grok-account-monitor-统一编排)。
+首次启动后，在 GrokIQ 的“系统设置 → 联动与启动项”中保存联动 Token、首次探针方案和出口目标；再到 Grok Register 的“系统设置 → Grok2API”中启用 GrokIQ 联动并填写相同 Token。完整说明见 [DEPLOYMENT.md](DEPLOYMENT.md#与-grokiq-统一编排)。
 
 ## 配置文件
 
@@ -224,10 +224,12 @@ Windows 启动：
 | `grok2api_remote_username` | 远程 Grok2API 管理员账号 |
 | `grok2api_remote_password` | 远程 Grok2API 管理员密码 |
 | `grok2api_auto_import` | JSON 生成后自动登录并导入远程 Grok2API |
-| `monitor_webhook_enabled` | 导入 Grok Build 后发送账号已导入 Webhook |
-| `monitor_webhook_url` | 监控端 `account-imported` 接口地址 |
-| `monitor_webhook_token` | Webhook 请求头 `x-monitor-token` |
-| `monitor_webhook_timeout_seconds` | 单次投递超时；失败后由持久 Outbox 退避重试 |
+| `grokiq_webhook_enabled` | 导入 Grok Build 后发送账号已导入 Webhook |
+| `grokiq_webhook_url` | GrokIQ `account-imported` 接口地址 |
+| `grokiq_webhook_token` | Webhook 请求头 `x-grokiq-token` |
+| `grokiq_webhook_timeout_seconds` | 单次投递超时；失败后由持久 Outbox 退避重试 |
+
+统一 Compose 中，`GROKIQ_REGISTER_PROBE_STABILIZATION_SECONDS` 控制 GrokIQ 收到新账号事件后等待多久再创建首次探针，默认 `15` 秒，设为 `0` 可关闭等待。
 
 配置模板见 [`config.example.json`](config.example.json)。
 
@@ -322,7 +324,7 @@ data/                   运行数据
 logs/                   运行日志
 outlookemail-data/      可选 OutlookEmail 数据
 compose.yaml            Docker Compose 配置
-compose.monitor.yaml    Grok Account Monitor 联动编排
+compose.grokiq.yaml     GrokIQ 联动编排
 ```
 
 ## Stars 趋势

@@ -33,17 +33,17 @@ config["grok2api_auth_dir"] = "data/grok2api_auth"
 config["outlookemail_api_base"] = os.environ.get(
     "GROK_OUTLOOKEMAIL_API_BASE", "http://outlook-email:5000"
 ).strip()
-monitor_url = os.environ.get("GROK_MONITOR_WEBHOOK_URL", "").strip()
-monitor_token = os.environ.get("GROK_MONITOR_WEBHOOK_TOKEN", "").strip()
-if monitor_url:
-    config["monitor_webhook_url"] = monitor_url
-if monitor_token:
-    config["monitor_webhook_token"] = monitor_token
-config["monitor_webhook_enabled"] = os.environ.get(
-    "GROK_MONITOR_WEBHOOK_ENABLED", "0"
+grokiq_url = os.environ.get("GROKIQ_WEBHOOK_URL", "").strip()
+grokiq_token = os.environ.get("GROKIQ_WEBHOOK_TOKEN", "").strip()
+if grokiq_url:
+    config["grokiq_webhook_url"] = grokiq_url
+if grokiq_token:
+    config["grokiq_webhook_token"] = grokiq_token
+config["grokiq_webhook_enabled"] = os.environ.get(
+    "GROKIQ_WEBHOOK_ENABLED", "0"
 ).strip().lower() in {"1", "true", "yes", "on"}
-config["monitor_webhook_timeout_seconds"] = env_int(
-    "GROK_MONITOR_WEBHOOK_TIMEOUT_SECONDS", 10, 1, 60
+config["grokiq_webhook_timeout_seconds"] = env_int(
+    "GROKIQ_WEBHOOK_TIMEOUT_SECONDS", 10, 1, 60
 )
 target.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY

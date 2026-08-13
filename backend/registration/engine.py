@@ -26,7 +26,7 @@ from curl_cffi import requests
 
 # 授权交换和导出逻辑集中在 integrations 包，编排层只负责调用。
 from backend.integrations import auth_exchange as _s2cpa
-from backend.integrations import account_monitor as _account_monitor
+from backend.integrations import grokiq as _grokiq
 from backend.integrations import grok2api_client as _grok2api
 from backend.integrations import sub2api_client as _sub2api
 from backend.integrations import sso_checker as _sso_checker
@@ -344,13 +344,13 @@ DEFAULT_CONFIG = {
     "sub2api_concurrency": 1,
     "sub2api_priority": 0,
     "sub2api_name_prefix": "",
-    "monitor_webhook_enabled": _environment_bool(
-        "GROK_MONITOR_WEBHOOK_ENABLED", False
+    "grokiq_webhook_enabled": _environment_bool(
+        "GROKIQ_WEBHOOK_ENABLED", False
     ),
-    "monitor_webhook_url": os.environ.get("GROK_MONITOR_WEBHOOK_URL", ""),
-    "monitor_webhook_token": os.environ.get("GROK_MONITOR_WEBHOOK_TOKEN", ""),
-    "monitor_webhook_timeout_seconds": _environment_int(
-        "GROK_MONITOR_WEBHOOK_TIMEOUT_SECONDS", 10
+    "grokiq_webhook_url": os.environ.get("GROKIQ_WEBHOOK_URL", ""),
+    "grokiq_webhook_token": os.environ.get("GROKIQ_WEBHOOK_TOKEN", ""),
+    "grokiq_webhook_timeout_seconds": _environment_int(
+        "GROKIQ_WEBHOOK_TIMEOUT_SECONDS", 10
     ),
     "mailnest_api_key": "",
     "mailnest_project_code": "x-ai001",
@@ -715,25 +715,25 @@ def persist_registration_result(
                 "extra": extra_data,
             }
         )
-        if _account_monitor.grok_build_import_succeeded(
+        if _grokiq.grok_build_import_succeeded(
             detail.get("grok2api_remote_result")
         ):
             try:
                 record = repository.get_results_by_ids([registration_id])[0]
-                event = _account_monitor.enqueue_imported_account(
+                event = _grokiq.enqueue_imported_account(
                     repository,
                     record,
                     config,
                 )
                 if event and log_callback:
                     log_callback(
-                        "[Monitor] 已加入账号监控通知队列: "
+                        "[GrokIQ] 已加入联动通知队列: "
                         f"{event.get('event_id')}"
                     )
-            except Exception as monitor_exc:
+            except Exception as grokiq_exc:
                 if log_callback:
                     log_callback(
-                        f"[Monitor] 账号已导入 Grok2API，但监控通知入队失败: {monitor_exc}"
+                        f"[GrokIQ] 账号已导入 Grok2API，但联动通知入队失败: {grokiq_exc}"
                     )
         return registration_id
     except Exception as exc:

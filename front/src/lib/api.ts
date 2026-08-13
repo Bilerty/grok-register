@@ -86,7 +86,7 @@ export type AccountRecord = {
   bot_risk?: boolean;
   bfs?: string | number | null;
   sso_risk_check?: SsoRiskCheck | null;
-  monitor_delivery?: {
+  grokiq_delivery?: {
     event_id: string;
     status: string;
     attempts: number;

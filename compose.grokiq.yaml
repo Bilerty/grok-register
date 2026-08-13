@@ -1,0 +1,54 @@
+services:
+  grok-register:
+    environment:
+      GROKIQ_WEBHOOK_ENABLED: ${GROKIQ_WEBHOOK_ENABLED:-true}
+      GROKIQ_WEBHOOK_URL: ${GROKIQ_WEBHOOK_URL:-http://grokiq-backend:8090/api/integrations/grok-register/account-imported}
+      GROKIQ_WEBHOOK_TOKEN: ${GROKIQ_WEBHOOK_TOKEN:-}
+      GROKIQ_WEBHOOK_TIMEOUT_SECONDS: ${GROKIQ_WEBHOOK_TIMEOUT_SECONDS:-10}
+
+  grokiq-backend:
+    image: ${GROKIQ_BACKEND_IMAGE:-ghcr.io/kaibush/grok-iq-backend:latest}
+    init: true
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      GROKIQ_HOST: 0.0.0.0
+      GROKIQ_PORT: 8090
+      GROKIQ_DATABASE_PATH: /app/data/grokiq.db
+      GROKIQ_RUNTIME_SECRET_KEY: ${GROKIQ_RUNTIME_SECRET_KEY:-}
+      GROKIQ_JWT_SECRET_KEY: ${GROKIQ_JWT_SECRET_KEY:-}
+      GROKIQ_JWT_TTL_SECONDS: ${GROKIQ_JWT_TTL_SECONDS:-604800}
+      GROKIQ_GROK2API_BASE_URL: ${GROKIQ_GROK2API_BASE_URL:-http://host.docker.internal:8000}
+      GROKIQ_GROK2API_ADMIN_USERNAME: ${GROKIQ_GROK2API_ADMIN_USERNAME:-}
+      GROKIQ_GROK2API_ADMIN_PASSWORD: ${GROKIQ_GROK2API_ADMIN_PASSWORD:-}
+      GROKIQ_GROK_REGISTER_WEBHOOK_TOKEN: ${GROKIQ_WEBHOOK_TOKEN:-}
+      GROKIQ_INITIAL_PROBE_ON_REGISTER: ${GROKIQ_INITIAL_PROBE_ON_REGISTER:-true}
+      GROKIQ_REGISTER_PROBE_STABILIZATION_SECONDS: ${GROKIQ_REGISTER_PROBE_STABILIZATION_SECONDS:-15}
+      GROKIQ_REGISTER_PROBE_PROFILE_IDS: '${GROKIQ_REGISTER_PROBE_PROFILE_IDS:-["quality-marker"]}'
+      GROKIQ_REGISTER_PROBE_EXECUTION_MODE: ${GROKIQ_REGISTER_PROBE_EXECUTION_MODE:-chat}
+      GROKIQ_REGISTER_PROBE_ROUNDS: ${GROKIQ_REGISTER_PROBE_ROUNDS:-3}
+      GROKIQ_REGISTER_PROBE_PROXY_TARGETS: '${GROKIQ_REGISTER_PROBE_PROXY_TARGETS:-[{"kind":"direct","id":null}]}'
+      GROKIQ_CORS_ORIGINS: ${GROKIQ_CORS_ORIGINS:-https://monitor.lvyrix.com,http://localhost:8091,http://127.0.0.1:8091}
+    expose:
+      - "8090"
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    networks:
+      default:
+        aliases:
+          - grokiq-backend
+    volumes:
+      - grokiq-data:/app/data
+
+  grokiq-frontend:
+    image: ${GROKIQ_FRONTEND_IMAGE:-ghcr.io/kaibush/grok-iq-frontend:latest}
+    init: true
+    restart: unless-stopped
+    depends_on:
+      grokiq-backend:
+        condition: service_healthy
+    ports:
+      - "${GROKIQ_WEB_BIND:-0.0.0.0}:${GROKIQ_WEB_PORT:-8091}:80"
+
+volumes:
+  grokiq-data:

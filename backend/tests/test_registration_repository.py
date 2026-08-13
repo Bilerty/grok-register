@@ -68,7 +68,7 @@ class RegistrationRepositoryMigrationTests(unittest.TestCase):
                         "SELECT name FROM sqlite_master WHERE type = 'table'"
                     )
                 }
-            self.assertIn("account_monitor_outbox", outbox_tables)
+            self.assertIn("grokiq_outbox", outbox_tables)
             self.assertTrue(
                 {
                     "email_account_id",

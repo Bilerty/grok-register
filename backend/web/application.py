@@ -29,7 +29,7 @@ from .jobs import job_coordinator
 from .relogin_jobs import relogin_coordinator
 from .sso_check_jobs import sso_check_coordinator
 from backend.integrations.proxy import validate_http_proxy_url
-from backend.integrations import account_monitor
+from backend.integrations import grokiq
 from backend.shared.paths import DATA_ROOT, PROJECT_ROOT, STATIC_ROOT
 
 APP_DIR = PROJECT_ROOT
@@ -98,10 +98,10 @@ CONFIG_PUBLIC_KEYS = (
     "sub2api_concurrency",
     "sub2api_priority",
     "sub2api_name_prefix",
-    "monitor_webhook_enabled",
-    "monitor_webhook_url",
-    "monitor_webhook_token",
-    "monitor_webhook_timeout_seconds",
+    "grokiq_webhook_enabled",
+    "grokiq_webhook_url",
+    "grokiq_webhook_token",
+    "grokiq_webhook_timeout_seconds",
     "mailnest_api_key",
     "mailnest_project_code",
     "yyds_api_key",
@@ -121,7 +121,7 @@ SENSITIVE_HINT_KEYS = {
     "cpa_management_key",
     "grok2api_remote_password",
     "sub2api_api_key",
-    "monitor_webhook_token",
+    "grokiq_webhook_token",
     "mailnest_api_key",
     "yyds_api_key",
     "yyds_jwt",
@@ -342,7 +342,7 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
             "grok2api_auto_import",
             "cpa_upload_enabled",
             "sub2api_enabled",
-            "monitor_webhook_enabled",
+            "grokiq_webhook_enabled",
             "outlookemail_disable_after_cpa_success",
         ):
             value = bool(value)
@@ -350,7 +350,7 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
             "register_count",
             "register_workers",
             "outlookemail_top",
-            "monitor_webhook_timeout_seconds",
+            "grokiq_webhook_timeout_seconds",
             "sub2api_proxy_id",
             "sub2api_concurrency",
             "sub2api_priority",
@@ -365,7 +365,7 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
                 value = max(1, min(value, 8))
             elif key == "outlookemail_top":
                 value = max(1, min(value, 50))
-            elif key == "monitor_webhook_timeout_seconds":
+            elif key == "grokiq_webhook_timeout_seconds":
                 value = max(1, min(value, 60))
             elif key == "sub2api_proxy_id":
                 value = max(0, value)
@@ -405,7 +405,7 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
             "cpa_remote_url",
             "grok2api_remote_url",
             "sub2api_remote_url",
-            "monitor_webhook_url",
+            "grokiq_webhook_url",
             "outlookemail_api_base",
             "duckmail_api_base",
             "cloudflare_api_base",
@@ -418,13 +418,13 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
                         status_code=400,
                         detail="Sub2API 站点地址必须以 http:// 或 https:// 开头",
                     )
-            if key == "monitor_webhook_url" and value:
+            if key == "grokiq_webhook_url" and value:
                 try:
-                    account_monitor.validate_monitor_config(
+                    grokiq.validate_grokiq_config(
                         {
                             **gr.config,
                             **updates,
-                            "monitor_webhook_url": value,
+                            "grokiq_webhook_url": value,
                         }
                     )
                 except ValueError as exc:
@@ -448,18 +448,18 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
         gr.config[key] = value
         changed.append(key)
     try:
-        account_monitor.validate_monitor_config(gr.config)
+        grokiq.validate_grokiq_config(gr.config)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     gr.save_config()
-    if any(key.startswith("monitor_webhook_") for key in changed):
-        account_monitor.monitor_notifier.wake()
+    if any(key.startswith("grokiq_webhook_") for key in changed):
+        grokiq.grokiq_notifier.wake()
     return {"changed": changed, "config": _public_config(gr.config)}
 
 
 def _serialize_record(
     record: Dict[str, Any],
-    monitor_delivery: Dict[str, Any] | None = None,
+    grokiq_delivery: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     item = dict(record or {})
     if not item.get("cpa_auth_path"):
@@ -502,8 +502,8 @@ def _serialize_record(
     item["exception_traceback"] = str(extra_data.get("exception_traceback") or "")
     item["exception_type"] = str(extra_data.get("exception_type") or "")
     item["has_exception_traceback"] = bool(item["exception_traceback"])
-    delivery = dict(monitor_delivery or {})
-    item["monitor_delivery"] = {
+    delivery = dict(grokiq_delivery or {})
+    item["grokiq_delivery"] = {
         "event_id": str(delivery.get("event_id") or ""),
         "status": str(delivery.get("status") or "not_queued"),
         "attempts": int(delivery.get("attempts") or 0),
@@ -786,7 +786,7 @@ def create_app() -> FastAPI:
             repository = gr.get_registration_repository()
             gr.backfill_access_token_bot_risk()
             gr.backfill_registration_risk_bot_risk()
-            account_monitor.monitor_notifier.start(
+            grokiq.grokiq_notifier.start(
                 repository,
                 lambda: dict(gr.config),
             )
@@ -795,7 +795,7 @@ def create_app() -> FastAPI:
 
     @app.on_event("shutdown")
     def _shutdown() -> None:
-        account_monitor.monitor_notifier.stop()
+        grokiq.grokiq_notifier.stop()
 
     @app.get("/api/health")
     def api_health() -> Dict[str, Any]:
@@ -930,7 +930,7 @@ def create_app() -> FastAPI:
             batch_id=batch_norm,
             bot_risk=bot_risk_norm,
         )
-        monitor_deliveries = store.account_monitor_deliveries(
+        grokiq_deliveries = store.grokiq_deliveries(
             [row.get("id") for row in rows]
         )
         return {
@@ -943,7 +943,7 @@ def create_app() -> FastAPI:
             "items": [
                 _serialize_record(
                     row,
-                    monitor_deliveries.get(int(row.get("id") or 0)),
+                    grokiq_deliveries.get(int(row.get("id") or 0)),
                 )
                 for row in rows
             ],
@@ -1126,7 +1126,7 @@ def create_app() -> FastAPI:
         rows = store.get_results_by_ids([account_id])
         if not rows:
             raise HTTPException(status_code=404, detail="记录不存在")
-        delivery = store.account_monitor_deliveries([account_id]).get(account_id)
+        delivery = store.grokiq_deliveries([account_id]).get(account_id)
         return {"ok": True, "item": _serialize_record(rows[0], delivery)}
 
     @app.post("/api/accounts/{account_id}/relogin")
@@ -1213,20 +1213,20 @@ def create_app() -> FastAPI:
             error="; ".join(import_errors),
         )
         refreshed = store.get_results_by_ids([account_id])[0]
-        monitor_notification: Dict[str, Any] = {"queued": False}
+        grokiq_notification: Dict[str, Any] = {"queued": False}
         if "grok_build" in results:
             try:
-                event = account_monitor.enqueue_imported_account(
+                event = grokiq.enqueue_imported_account(
                     store,
                     refreshed,
                     gr.config,
                 )
-                monitor_notification = {
+                grokiq_notification = {
                     "queued": bool(event),
                     "eventId": str((event or {}).get("event_id") or ""),
                 }
             except Exception as exc:
-                monitor_notification = {"queued": False, "error": str(exc)}
+                grokiq_notification = {"queued": False, "error": str(exc)}
         aggregate = {
             "formats": results,
             "errors": errors,
@@ -1235,11 +1235,11 @@ def create_app() -> FastAPI:
             "synced": sum(int(result.get("synced", 0) or 0) for result in results.values()),
             "syncFailed": sync_failed,
         }
-        delivery = store.account_monitor_deliveries([account_id]).get(account_id)
+        delivery = store.grokiq_deliveries([account_id]).get(account_id)
         return {
             "ok": True,
             "result": aggregate,
-            "monitorNotification": monitor_notification,
+            "grokiqNotification": grokiq_notification,
             "item": _serialize_record(refreshed, delivery),
         }
 

@@ -546,7 +546,7 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                 <CardHeader className="flex-row items-start gap-3">
                   <SectionIcon><Webhook className="h-5 w-5" aria-hidden="true" /></SectionIcon>
                   <div>
-                    <CardTitle>账号监控 Webhook</CardTitle>
+                    <CardTitle>GrokIQ Webhook</CardTitle>
                     <CardDescription>
                       仅在 grok_build 导入成功后发送账号已导入事件；注册机不查询监控处理结果。
                     </CardDescription>
@@ -554,28 +554,28 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                 </CardHeader>
                 <CardContent className="grid gap-4">
                   <ToggleRow
-                    title="启用账号监控联动"
+                    title="启用 GrokIQ 联动"
                     description="自动导入与账号页手动导入共用同一持久通知队列"
-                    checked={!!config.monitor_webhook_enabled}
-                    onCheckedChange={(value) => setField("monitor_webhook_enabled", value)}
+                    checked={!!config.grokiq_webhook_enabled}
+                    onCheckedChange={(value) => setField("grokiq_webhook_enabled", value)}
                   />
                   <ConfigField
                     {...fieldState}
                     label="Webhook URL"
-                    field="monitor_webhook_url"
-                    placeholder="http://monitor-backend:8090/api/integrations/grok-register/account-imported"
-                    helper="统一 Compose 内使用 monitor-backend 容器名；独立部署可填写监控服务内网地址"
+                    field="grokiq_webhook_url"
+                    placeholder="http://grokiq-backend:8090/api/integrations/grok-register/account-imported"
+                    helper="统一 Compose 内使用 grokiq-backend 容器名；独立部署可填写 GrokIQ 内网地址"
                   />
                   <ConfigField
                     {...fieldState}
                     label="联动 Token"
-                    field="monitor_webhook_token"
+                    field="grokiq_webhook_token"
                     type="password"
                   />
                   <ConfigField
                     {...fieldState}
                     label="请求超时（秒）"
-                    field="monitor_webhook_timeout_seconds"
+                    field="grokiq_webhook_timeout_seconds"
                     type="number"
                     helper="注册机只判断 Webhook 是否收到 HTTP 2xx，不读取后续探针或风险结果"
                   />

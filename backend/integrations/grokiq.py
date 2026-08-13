@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Durable grok-account-monitor webhook delivery.
+"""Durable GrokIQ webhook delivery.
 
 The registration flow writes an outbox row only after the grok_build document
 has been accepted by Grok2API. A single background thread delivers
-pending rows with at-least-once semantics; the monitor deduplicates by event_id.
+pending rows with at-least-once semantics; GrokIQ deduplicates by event_id.
 """
 from __future__ import annotations
 
@@ -18,27 +18,27 @@ from curl_cffi import requests
 logger = logging.getLogger(__name__)
 
 
-class AccountMonitorDeliveryError(RuntimeError):
+class GrokIQDeliveryError(RuntimeError):
     def __init__(self, message: str, *, response_text: str = ""):
         super().__init__(message)
         self.response_text = response_text
 
 
-def validate_monitor_config(config: Mapping[str, Any]) -> Dict[str, Any]:
-    enabled = bool(config.get("monitor_webhook_enabled"))
-    url = str(config.get("monitor_webhook_url") or "").strip()
-    token = str(config.get("monitor_webhook_token") or "").strip()
+def validate_grokiq_config(config: Mapping[str, Any]) -> Dict[str, Any]:
+    enabled = bool(config.get("grokiq_webhook_enabled"))
+    url = str(config.get("grokiq_webhook_url") or "").strip()
+    token = str(config.get("grokiq_webhook_token") or "").strip()
     try:
-        timeout = int(config.get("monitor_webhook_timeout_seconds") or 10)
+        timeout = int(config.get("grokiq_webhook_timeout_seconds") or 10)
     except (TypeError, ValueError) as exc:
-        raise ValueError("账号监控联动超时必须是整数") from exc
+        raise ValueError("GrokIQ 联动超时必须是整数") from exc
     timeout = max(1, min(timeout, 60))
     if enabled:
         parsed = urlsplit(url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise ValueError("账号监控 Webhook URL 必须是有效的 HTTP(S) 地址")
+            raise ValueError("GrokIQ Webhook URL 必须是有效的 HTTP(S) 地址")
         if not token:
-            raise ValueError("启用账号监控联动时必须填写联动 Token")
+            raise ValueError("启用 GrokIQ 联动时必须填写联动 Token")
     return {
         "enabled": enabled,
         "url": url,
@@ -54,16 +54,16 @@ def enqueue_imported_account(
 ) -> Dict[str, Any] | None:
     """Persist one event after a successful grok_build import."""
 
-    if not bool(config.get("monitor_webhook_enabled")):
+    if not bool(config.get("grokiq_webhook_enabled")):
         return None
-    event = repository.enqueue_account_monitor_event(
+    event = repository.enqueue_grokiq_event(
         registration_id=int(record.get("id") or 0),
         email=str(record.get("email") or ""),
         bot_risk=bool(record.get("bot_risk")),
         bfs=record.get("bfs"),
         occurred_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     )
-    monitor_notifier.wake()
+    grokiq_notifier.wake()
     return event
 
 
@@ -76,7 +76,7 @@ def grok_build_import_succeeded(result: Mapping[str, Any] | None) -> bool:
     )
 
 
-class AccountMonitorNotifier:
+class GrokIQNotifier:
     def __init__(self) -> None:
         self._repository: Any = None
         self._config_loader: Callable[[], Mapping[str, Any]] | None = None
@@ -97,12 +97,12 @@ class AccountMonitorNotifier:
             self._repository = repository
             self._config_loader = config_loader
             self._stop.clear()
-            recovered = repository.recover_account_monitor_deliveries()
+            recovered = repository.recover_grokiq_deliveries()
             if recovered:
-                logger.info("recovered account monitor deliveries count=%s", recovered)
+                logger.info("recovered GrokIQ deliveries count=%s", recovered)
             self._thread = threading.Thread(
                 target=self._run,
-                name="account-monitor-webhook",
+                name="grokiq-webhook",
                 daemon=True,
             )
             self._thread.start()
@@ -127,7 +127,7 @@ class AccountMonitorNotifier:
         while not self._stop.is_set():
             config = self._load_config()
             try:
-                normalized = validate_monitor_config(config)
+                normalized = validate_grokiq_config(config)
             except ValueError as exc:
                 self._set_error(str(exc))
                 self._wait(2.0)
@@ -137,7 +137,7 @@ class AccountMonitorNotifier:
             if not normalized["enabled"] or not normalized["url"] or not normalized["token"]:
                 self._wait(2.0)
                 continue
-            event = self._repository.claim_account_monitor_delivery()
+            event = self._repository.claim_grokiq_delivery()
             if event is None:
                 self._wait(2.0)
                 continue
@@ -150,7 +150,7 @@ class AccountMonitorNotifier:
         try:
             value = loader()
         except Exception as exc:
-            self._set_error(f"读取账号监控联动配置失败: {exc}")
+            self._set_error(f"读取 GrokIQ 联动配置失败: {exc}")
             return {}
         return value if isinstance(value, Mapping) else {}
 
@@ -176,7 +176,7 @@ class AccountMonitorNotifier:
                     headers={
                         "Accept": "application/json",
                         "Content-Type": "application/json",
-                        "x-monitor-token": str(config["token"]),
+                        "x-grokiq-token": str(config["token"]),
                     },
                     json=payload,
                     timeout=float(config["timeout"]),
@@ -184,31 +184,31 @@ class AccountMonitorNotifier:
             status_code = int(getattr(response, "status_code", 0) or 0)
             if status_code < 200 or status_code >= 300:
                 response_text = str(getattr(response, "text", "") or "")[:16000]
-                raise AccountMonitorDeliveryError(
+                raise GrokIQDeliveryError(
                     self._response_error(response, status_code),
                     response_text=response_text,
                 )
-            self._repository.complete_account_monitor_delivery(
+            self._repository.complete_grokiq_delivery(
                 event_id,
             )
             with self._lock:
                 self._last_error = ""
-            logger.info("account monitor webhook delivered event_id=%s", event_id)
+            logger.info("GrokIQ webhook delivered event_id=%s", event_id)
         except Exception as exc:
             delay = min(300.0, float(2 ** min(attempts, 8)))
             body = (
                 exc.response_text
-                if isinstance(exc, AccountMonitorDeliveryError)
+                if isinstance(exc, GrokIQDeliveryError)
                 else response_text
             )
-            self._repository.retry_account_monitor_delivery(
+            self._repository.retry_grokiq_delivery(
                 event_id,
                 error=str(exc),
                 delay_seconds=delay,
                 response_json=body,
             )
             logger.warning(
-                "account monitor webhook retry event_id=%s attempts=%s delay=%s error=%s",
+                "GrokIQ webhook retry event_id=%s attempts=%s delay=%s error=%s",
                 event_id,
                 attempts,
                 delay,
@@ -226,9 +226,9 @@ class AccountMonitorNotifier:
             if isinstance(detail, Mapping):
                 detail = detail.get("message") or detail.get("detail")
             if detail:
-                return f"账号监控 Webhook 返回 HTTP {status_code}: {detail}"
+                return f"GrokIQ Webhook 返回 HTTP {status_code}: {detail}"
         text = str(getattr(response, "text", "") or "").strip()
-        return f"账号监控 Webhook 返回 HTTP {status_code}: {text or '请求失败'}"
+        return f"GrokIQ Webhook 返回 HTTP {status_code}: {text or '请求失败'}"
 
     def _set_error(self, message: str) -> None:
         normalized = str(message or "")[:4000]
@@ -237,11 +237,11 @@ class AccountMonitorNotifier:
                 return
             self._last_error = normalized
         if normalized:
-            logger.warning("account monitor webhook paused error=%s", normalized)
+            logger.warning("GrokIQ webhook paused error=%s", normalized)
 
     def _wait(self, seconds: float) -> None:
         self._wake.wait(timeout=max(float(seconds), 0.1))
         self._wake.clear()
 
 
-monitor_notifier = AccountMonitorNotifier()
+grokiq_notifier = GrokIQNotifier()
