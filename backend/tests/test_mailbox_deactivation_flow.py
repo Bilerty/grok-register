@@ -66,6 +66,104 @@ class OutlookWorkflowTests(unittest.TestCase):
             "unsupported_source",
         )
 
+    def test_registration_risk_disables_outlook_account(self):
+        gr.config.update(
+            {
+                "email_provider": "outlookemail",
+                "outlookemail_source": "accounts",
+                "outlookemail_disable_after_cpa_success": True,
+            }
+        )
+        logs = []
+        with mock.patch.object(
+            gr.outlookemail_provider,
+            "account_for_email",
+            return_value={"id": 88, "email": "risk@outlook.com"},
+        ), mock.patch.object(
+            gr.outlookemail_provider,
+            "disable_account",
+            return_value={"success": True, "account_id": 88},
+        ) as disable:
+            detail = gr.maybe_disable_outlookemail_for_consumed_failure(
+                gr.FAIL_RISK,
+                "risk@outlook.com",
+                reason="注册风控: botFlagSource=1",
+                log_callback=logs.append,
+            )
+        self.assertEqual(detail["status"], "success")
+        self.assertEqual(detail["account_id"], "88")
+        disable.assert_called_once()
+        self.assertTrue(any("注册风控" in item and "停用完成" in item for item in logs))
+
+    def test_registration_risk_skips_disable_for_non_outlook(self):
+        gr.config["email_provider"] = "cloudflare"
+        with mock.patch.object(gr, "disable_outlookemail_consumed") as disable:
+            detail = gr.maybe_disable_outlookemail_for_consumed_failure(
+                gr.FAIL_RISK,
+                "risk@example.com",
+                reason="注册风控",
+            )
+        self.assertIsNone(detail)
+        disable.assert_not_called()
+
+    def test_sso_timeout_disables_outlook_account(self):
+        gr.config.update(
+            {
+                "email_provider": "outlookemail",
+                "outlookemail_source": "accounts",
+                "outlookemail_disable_after_cpa_success": True,
+            }
+        )
+        logs = []
+        with mock.patch.object(
+            gr, "disable_outlookemail_consumed", return_value={"status": "success"}
+        ) as disable:
+            detail = gr.maybe_disable_outlookemail_for_consumed_failure(
+                gr.FAIL_SSO,
+                "sso@outlook.com",
+                reason="SSO超时: 未获取到 sso cookie",
+                log_callback=logs.append,
+            )
+        self.assertEqual(detail["status"], "success")
+        disable.assert_called_once()
+        self.assertTrue(any("SSO超时" in item and "停用完成" in item for item in logs))
+
+    def test_already_registered_still_disables_outlook_account(self):
+        gr.config.update(
+            {
+                "email_provider": "outlookemail",
+                "outlookemail_source": "accounts",
+                "outlookemail_disable_after_cpa_success": True,
+            }
+        )
+        with mock.patch.object(
+            gr, "disable_outlookemail_consumed", return_value={"status": "success"}
+        ) as disable:
+            detail = gr.maybe_disable_outlookemail_for_consumed_failure(
+                gr.FAIL_ALREADY_REGISTERED,
+                "dup@outlook.com",
+                reason="账号已注册",
+            )
+        self.assertEqual(detail["status"], "success")
+        disable.assert_called_once()
+
+    def test_other_failures_do_not_disable_outlook_account(self):
+        gr.config.update(
+            {
+                "email_provider": "outlookemail",
+                "outlookemail_source": "accounts",
+                "outlookemail_disable_after_cpa_success": True,
+            }
+        )
+        with mock.patch.object(gr, "disable_outlookemail_consumed") as disable:
+            detail = gr.maybe_disable_outlookemail_for_consumed_failure(
+                gr.FAIL_CODE,
+                "timeout@outlook.com",
+                reason="未收到验证码",
+            )
+        self.assertIsNone(detail)
+        disable.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

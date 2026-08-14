@@ -247,8 +247,8 @@ def backfill_registration_risk_bot_risk(log_callback=None) -> int:
 def email_registered_successfully(email):
     """数据库或旧账号文件中已有成功/已消耗记录时返回 True。
 
-    除正式 success 外，已保存 SSO、已判定 already_registered、或已尝试停用
-    的 Outlook 邮箱也应跳过，避免邮箱池重复取用造成死循环。
+    除正式 success 外，已保存 SSO、已判定 already_registered / registration_risk /
+    sso_timeout，或已尝试停用的 Outlook 邮箱也应跳过，避免邮箱池重复取用造成死循环。
     """
     normalized = str(email or "").strip()
     if not normalized:
@@ -1019,13 +1019,48 @@ def disable_outlookemail_after_cpa_success(email, cpa_detail=None, log_callback=
     return detail
 
 
+def maybe_disable_outlookemail_for_consumed_failure(
+    kind,
+    email,
+    *,
+    reason: str = "",
+    log_callback=None,
+) -> dict | None:
+    """账号已注册、注册风控或 SSO 超时停用 Outlook 邮箱；邮箱已消耗，避免再次取用。"""
+    if kind not in {FAIL_ALREADY_REGISTERED, FAIL_RISK, FAIL_SSO}:
+        return None
+    if not is_outlookemail_registration() or not str(email or "").strip():
+        return None
+    label = FAIL_LABELS.get(kind, kind)
+    fail_email = str(email).strip()
+    if log_callback:
+        log_callback(f"[*] {label}，按自动停用开关处理 Outlook 邮箱: {fail_email}")
+    detail = disable_outlookemail_consumed(
+        fail_email,
+        reason=reason or label,
+        log_callback=log_callback,
+    )
+    status = str((detail or {}).get("status") or "")
+    if log_callback:
+        if status == "success":
+            log_callback(f"[+] {label}：Outlook 邮箱停用完成: {fail_email}")
+        elif status == "feature_disabled":
+            log_callback(f"[*] {label}：自动停用开关未开启，跳过停用 Outlook: {fail_email}")
+        elif status == "failed":
+            log_callback(
+                f"[!] {label}：Outlook 邮箱停用失败: {fail_email}"
+                f" — {(detail or {}).get('error') or ''}"
+            )
+    return detail
+
+
 def disable_outlookemail_consumed(
     email,
     *,
     reason: str = "",
     log_callback=None,
 ) -> dict:
-    """在账号已存在 / 已拿 SSO 等场景下停用 Outlook 邮箱，避免重复取用。
+    """在账号已存在 / 注册风控 / SSO 超时 / 已拿 SSO 等场景下停用 Outlook 邮箱，避免重复取用。
 
     与 CPA 成功后停用共用同一开关 outlookemail_disable_after_cpa_success：
     仅在开关开启且来源为 accounts 时才会远程停用。
@@ -3067,30 +3102,12 @@ def run_registration(count):
                                     f" botFlagSource={getattr(exc, 'bot_flag_source', None)!r}"
                                 )
                         fail_email = current_attempt_email(email, exc)
-                        email_disable_detail = None
-                        if kind == FAIL_ALREADY_REGISTERED and is_outlookemail_registration() and fail_email:
-                            registration_log(
-                                f"[W{wid+1}] [*] 账号已注册，按自动停用开关处理 Outlook 邮箱: {fail_email}"
-                            )
-                            email_disable_detail = disable_outlookemail_consumed(
-                                fail_email,
-                                reason=f"账号已注册: {exc}",
-                                log_callback=lambda m: registration_log(f"[W{wid+1}] {m}")
-                            )
-                            status = str((email_disable_detail or {}).get("status") or "")
-                            if status == "success":
-                                registration_log(
-                                    f"[W{wid+1}] [+] 账号已注册：Outlook 邮箱停用完成: {fail_email}"
-                                )
-                            elif status == "feature_disabled":
-                                registration_log(
-                                    f"[W{wid+1}] [*] 账号已注册：自动停用开关未开启，跳过停用 Outlook: {fail_email}"
-                                )
-                            elif status == "failed":
-                                registration_log(
-                                    f"[W{wid+1}] [!] 账号已注册：Outlook 邮箱停用失败: {fail_email}"
-                                    f" — {(email_disable_detail or {}).get('error') or ''}"
-                                )
+                        email_disable_detail = maybe_disable_outlookemail_for_consumed_failure(
+                            kind,
+                            fail_email,
+                            reason=f"{FAIL_LABELS.get(kind, kind)}: {exc}",
+                            log_callback=lambda m: registration_log(f"[W{wid+1}] {m}"),
+                        )
                         _persist_result(
                             started_at=attempt_started_at,
                             worker_id=wid,
@@ -3420,30 +3437,12 @@ def run_registration(count):
                             f" botFlagSource={getattr(exc, 'bot_flag_source', None)!r}"
                         )
                 fail_email = current_attempt_email(email, exc)
-                email_disable_detail = None
-                if kind == FAIL_ALREADY_REGISTERED and is_outlookemail_registration() and fail_email:
-                    registration_log(
-                        f"[*] 账号已注册，按自动停用开关处理 Outlook 邮箱: {fail_email}"
-                    )
-                    email_disable_detail = disable_outlookemail_consumed(
-                        fail_email,
-                        reason=f"账号已注册: {exc}",
-                        log_callback=registration_log
-                    )
-                    status = str((email_disable_detail or {}).get("status") or "")
-                    if status == "success":
-                        registration_log(
-                            f"[+] 账号已注册：Outlook 邮箱停用完成: {fail_email}"
-                        )
-                    elif status == "feature_disabled":
-                        registration_log(
-                            f"[*] 账号已注册：自动停用开关未开启，跳过停用 Outlook: {fail_email}"
-                        )
-                    elif status == "failed":
-                        registration_log(
-                            f"[!] 账号已注册：Outlook 邮箱停用失败: {fail_email}"
-                            f" — {(email_disable_detail or {}).get('error') or ''}"
-                        )
+                email_disable_detail = maybe_disable_outlookemail_for_consumed_failure(
+                    kind,
+                    fail_email,
+                    reason=f"{FAIL_LABELS.get(kind, kind)}: {exc}",
+                    log_callback=registration_log,
+                )
                 _persist_result(
                     started_at=attempt_started_at,
                     email=fail_email,

@@ -293,6 +293,38 @@ class RegistrationRepositoryMigrationTests(unittest.TestCase):
                 [safe],
             )
 
+    def test_registration_risk_email_is_treated_as_consumed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RegistrationRepository(Path(tmp) / "results.sqlite3")
+            store.add_result(
+                {
+                    "email": "risk@outlook.com",
+                    "status": "failure",
+                    "failure_type": "registration_risk",
+                    "failure_reason": "注册风控拒绝",
+                }
+            )
+            store.add_result(
+                {
+                    "email": "sso@outlook.com",
+                    "status": "failure",
+                    "failure_type": "sso_timeout",
+                    "failure_reason": "未获取到 sso cookie",
+                }
+            )
+            store.add_result(
+                {
+                    "email": "timeout@outlook.com",
+                    "status": "failure",
+                    "failure_type": "code_timeout",
+                    "failure_reason": "未收到验证码",
+                }
+            )
+
+            self.assertTrue(store.has_registered_or_consumed("risk@outlook.com"))
+            self.assertTrue(store.has_registered_or_consumed("sso@outlook.com"))
+            self.assertFalse(store.has_registered_or_consumed("timeout@outlook.com"))
+
     def test_successful_relogin_marks_registration_success_and_clears_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = RegistrationRepository(Path(tmp) / "results.sqlite3")

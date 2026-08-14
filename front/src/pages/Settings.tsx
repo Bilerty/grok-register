@@ -755,7 +755,7 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
             <div className="sm:col-span-2">
               <ToggleRow
                 title="CPA 成功后停用 Outlook 邮箱"
-                description="仅 accounts 来源生效；CPA 状态必须为 success，随后自动更新邮箱为 inactive"
+                description="仅 accounts 来源生效；CPA 成功、账号已注册、注册风控或 SSO 超时后都会把邮箱更新为 inactive"
                 checked={!!config.outlookemail_disable_after_cpa_success}
                 onCheckedChange={(value) =>
                   setField("outlookemail_disable_after_cpa_success", value)

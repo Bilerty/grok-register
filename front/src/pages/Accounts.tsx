@@ -180,6 +180,134 @@ function emailDisableLabel(status: string) {
   return labels[status] || status || "-";
 }
 
+type ReloginRecoveryKind = "sso_timeout" | "sso_token_exchange";
+
+function reloginRecoveryKind(
+  item: Pick<AccountRecord, "status" | "cpa_status" | "failure_type" | "failure_reason">,
+): ReloginRecoveryKind | null {
+  // 重登成功后的旧记录可能还保留历史 failure_type；CPA 已成功时不再重复提醒。
+  if (item.status !== "failure" || item.cpa_status === "success") return null;
+  if (item.failure_type === "sso_timeout") return "sso_timeout";
+  if (
+    item.failure_type === "cpa"
+    && /sso\s*换\s*token\s*失败/i.test(item.failure_reason || "")
+  ) {
+    return "sso_token_exchange";
+  }
+  return null;
+}
+
+function ReloginRecoveryHint({
+  item,
+  compact = false,
+  running = false,
+  taskRunning = false,
+  stage = "",
+  onRelogin,
+}: {
+  item: AccountRecord;
+  compact?: boolean;
+  running?: boolean;
+  taskRunning?: boolean;
+  stage?: string;
+  onRelogin: (item: AccountRecord, confirm?: boolean) => void;
+}) {
+  const kind = reloginRecoveryKind(item);
+  if (!kind) return null;
+
+  const title = kind === "sso_timeout"
+    ? "未获取到 SSO，授权文件尚未生成"
+    : "SSO 换 Token 失败，授权文件尚未生成";
+  const compactTitle = kind === "sso_timeout" ? "SSO 获取超时" : "SSO 换 Token 失败";
+  const credentialsMissing = !item.email || !item.password;
+  const disabled = taskRunning || credentialsMissing;
+  const buttonLabel = running ? (stage || "正在重登") : "立即重登";
+  const buttonTitle = credentialsMissing
+    ? "该记录缺少邮箱或密码"
+    : taskRunning && !running
+      ? "已有重新登录任务正在运行"
+      : undefined;
+
+  if (compact) {
+    return (
+      <div
+        role="status"
+        className="flex min-w-0 items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-amber-950 shadow-sm shadow-amber-100/40"
+      >
+        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white text-amber-600 ring-1 ring-amber-200">
+          {running ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+          ) : (
+            <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+          )}
+        </span>
+        <div className="min-w-0 flex-1 truncate text-[11px] font-semibold leading-4" title={title}>
+          {running ? (stage || "正在重新登录") : `${compactTitle} · 可重登修复`}
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="h-7 min-h-7 shrink-0 rounded-md px-2 text-[11px] font-semibold text-amber-900 hover:bg-amber-100 hover:text-amber-950"
+          disabled={disabled}
+          title={buttonTitle}
+          onClick={() => onRelogin(item, false)}
+        >
+          {running ? "处理中" : "重登"}
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      role="status"
+      className="rounded-lg border border-amber-200 bg-amber-50/80 p-3.5 text-amber-950 shadow-sm"
+    >
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-white text-amber-600 shadow-sm ring-1 ring-amber-200">
+            {running ? (
+              <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
+            ) : (
+              <RefreshCw className="h-5 w-5" aria-hidden="true" />
+            )}
+          </span>
+          <div className="min-w-0">
+            <div className="mb-1 flex flex-wrap items-center gap-2">
+              <Badge variant="warning" className="rounded-md px-1.5 py-0 text-[10px] shadow-none">
+                可重登修复
+              </Badge>
+              <span className="text-[11px] font-medium text-amber-700">
+                {kind === "sso_timeout" ? "SSO 获取异常" : "授权转换异常"}
+              </span>
+            </div>
+            <div className="text-sm font-semibold leading-5">{running ? (stage || "正在重新登录") : title}</div>
+            <p className="mt-1 text-xs leading-5 text-amber-800">
+              点击立即重登刷新 SSO，成功后可获取 CPA / Grok2API 授权文件。
+            </p>
+          </div>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          className="min-h-9 shrink-0 border-amber-300 bg-white text-amber-950 shadow-sm hover:border-amber-400 hover:bg-amber-100 hover:text-amber-950"
+          disabled={disabled}
+          title={buttonTitle}
+          onClick={() => onRelogin(item, false)}
+        >
+          {running ? (
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+          ) : (
+            <LogIn className="h-4 w-4" aria-hidden="true" />
+          )}
+          {buttonLabel}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function AuthExportLink({
   item,
   kind,
@@ -226,6 +354,8 @@ function AccountDetails({
   authJsonLoading,
   onRelogin,
   reloginRunning,
+  reloginTaskRunning,
+  reloginStage,
 }: {
   detail: AccountRecord;
   showPassword: boolean;
@@ -234,8 +364,10 @@ function AccountDetails({
   onCopyAuthJson: (kind: "cpa" | "grok2api") => void;
   onDownloadAuthJson: (kind: "cpa" | "grok2api") => void;
   authJsonLoading: "" | "copy-cpa" | "copy-grok2api";
-  onRelogin: (item: AccountRecord) => void;
+  onRelogin: (item: AccountRecord, confirm?: boolean) => void;
   reloginRunning: boolean;
+  reloginTaskRunning: boolean;
+  reloginStage: string;
 }) {
   const riskCheck = detail.sso_risk_check;
   const riskSource = riskCheck?.bot_flag_source;
@@ -311,6 +443,14 @@ function AccountDetails({
           </Badge>
         </div>
       </div>
+
+      <ReloginRecoveryHint
+        item={detail}
+        running={reloginRunning}
+        taskRunning={reloginTaskRunning}
+        stage={reloginStage}
+        onRelogin={onRelogin}
+      />
 
       {riskCheck ? (
         <section className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50/80">
@@ -506,14 +646,18 @@ function AccountDetails({
           className="col-span-2"
           variant="outline"
           onClick={() => onRelogin(detail)}
-          disabled={reloginRunning || !detail.email || !detail.password}
+          disabled={reloginTaskRunning || !detail.email || !detail.password}
         >
           {reloginRunning ? (
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
           ) : (
             <LogIn className="h-4 w-4" aria-hidden="true" />
           )}
-          {reloginRunning ? "正在重新登录" : "重新登录并刷新 SSO"}
+          {reloginRunning
+            ? reloginStage || "正在重新登录"
+            : reloginTaskRunning
+              ? "其他账号正在重新登录"
+              : "重新登录并刷新 SSO"}
         </Button>
       </div>
     </div>
@@ -922,12 +1066,15 @@ export function AccountsPage() {
     }
   };
 
-  const onRelogin = async (item: AccountRecord) => {
+  const onRelogin = async (item: AccountRecord, confirm = true) => {
     if (!item.email || !item.password) {
       showToast("该记录缺少邮箱或密码", "error");
       return;
     }
-    if (!window.confirm(`使用已保存的账号密码重新登录 ${item.email}，刷新 SSO 和授权文件？`)) return;
+    if (
+      confirm
+      && !window.confirm(`使用已保存的账号密码重新登录 ${item.email}，刷新 SSO 和授权文件？`)
+    ) return;
     try {
       const result = await api.startRelogin(item.id);
       await afterReloginStart(result.relogin);
@@ -1293,6 +1440,14 @@ export function AccountsPage() {
                           </div>
                           <div className="mt-2 space-y-2">
                             <MobileStatusGrid item={item} />
+                            <ReloginRecoveryHint
+                              item={item}
+                              compact
+                              running={!!relogin?.running && relogin.account_id === item.id}
+                              taskRunning={!!relogin?.running}
+                              stage={relogin?.stage || ""}
+                              onRelogin={onRelogin}
+                            />
                             <div className="flex justify-end">
                               <Badge variant={emailDisableVariant(item.email_disable_status)}>
                                 <Power className="mr-1 h-3 w-3" aria-hidden="true" />
@@ -1386,6 +1541,18 @@ export function AccountsPage() {
                               <div className="min-w-0">
                                 <div className="truncate font-medium text-foreground" title={item.email}>{item.email || "-"}</div>
                                 <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{item.finished_at || "未记录时间"}</div>
+                                {reloginRecoveryKind(item) ? (
+                                  <div className="mt-2">
+                                    <ReloginRecoveryHint
+                                      item={item}
+                                      compact
+                                      running={!!relogin?.running && relogin.account_id === item.id}
+                                      taskRunning={!!relogin?.running}
+                                      stage={relogin?.stage || ""}
+                                      onRelogin={onRelogin}
+                                    />
+                                  </div>
+                                ) : null}
                               </div>
                             </div>
                           </td>
@@ -1574,6 +1741,8 @@ export function AccountsPage() {
                 authJsonLoading={authJsonLoading}
                 onRelogin={onRelogin}
                 reloginRunning={!!relogin?.running && relogin.account_id === detail.id}
+                reloginTaskRunning={!!relogin?.running}
+                reloginStage={relogin?.stage || ""}
               />
             </div>
           </section>
