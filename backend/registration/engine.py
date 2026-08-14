@@ -240,7 +240,7 @@ def backfill_registration_risk_bot_risk(log_callback=None) -> int:
             log_callback(f"[!] 注册风控 bot_risk 回填失败: {exc}")
         return 0
     if updated and log_callback:
-        log_callback(f"[*] 已回填注册风控 bot_risk 标记 {updated} 条")
+        log_callback(f"[*] 已回填或修正注册风控记录 {updated} 条")
     return updated
 
 

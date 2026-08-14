@@ -441,6 +441,8 @@ class ReloginJobCoordinatorTests(unittest.TestCase):
         store.update_relogin_result.assert_called_once()
         saved = store.update_relogin_result.call_args.kwargs
         self.assertEqual(saved["status"], "partial")
+        self.assertEqual(saved["failure_type"], "registration_risk")
+        self.assertIn("SSO 风控异常", saved["failure_reason"])
         self.assertTrue(saved["cpa_detail"]["bot_risk"])
         self.assertEqual(saved["cpa_detail"]["bfs"], 3)
         self.assertEqual(saved["cpa_detail"]["cpa_auth_path"], "/old/cpa.json")

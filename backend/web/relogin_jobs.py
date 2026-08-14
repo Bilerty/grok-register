@@ -480,6 +480,16 @@ class ReloginJobCoordinator:
                 cpa_detail=cpa_detail,
                 status="partial" if account_file else "failed",
                 error=error,
+                failure_type=(
+                    "registration_risk"
+                    if str(risk_compact.get("status") or "") == "flagged"
+                    else ""
+                ),
+                failure_reason=(
+                    error
+                    if str(risk_compact.get("status") or "") == "flagged"
+                    else ""
+                ),
                 screenshot_path=screenshot_path,
                 diagnostics={
                     "stage": failure_stage,

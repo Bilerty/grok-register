@@ -410,6 +410,76 @@ class RegistrationRepositoryMigrationTests(unittest.TestCase):
             self.assertEqual(extra["relogin_status"], "failed")
             self.assertEqual(extra["relogin_error"], "登录超时")
 
+    def test_flagged_partial_relogin_replaces_sso_timeout_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RegistrationRepository(Path(tmp) / "results.sqlite3")
+            account_id = store.add_result(
+                {
+                    "email": "risk-after-relogin@example.com",
+                    "password": "secret",
+                    "status": "failure",
+                    "success": False,
+                    "failure_type": "sso_timeout",
+                    "failure_reason": "等待 SSO 超时",
+                }
+            )
+
+            self.assertTrue(
+                store.update_relogin_result(
+                    account_id,
+                    account_file="/tmp/risk-after-relogin@example.com.txt",
+                    cpa_detail={
+                        "enabled": True,
+                        "status": "not_attempted",
+                        "bot_risk": True,
+                        "bfs": "3",
+                    },
+                    status="partial",
+                    error="SSO 风控异常，已停止授权重建: botFlagSource=3",
+                    failure_type="registration_risk",
+                    failure_reason="SSO 风控异常，已停止授权重建: botFlagSource=3",
+                )
+            )
+
+            refreshed = store.get_results_by_ids([account_id])[0]
+            self.assertEqual(refreshed["status"], "failure")
+            self.assertEqual(refreshed["success"], 0)
+            self.assertEqual(refreshed["failure_type"], "registration_risk")
+            self.assertIn("botFlagSource=3", refreshed["failure_reason"])
+            self.assertEqual(refreshed["sso_saved"], 1)
+            self.assertEqual(refreshed["bot_risk"], 1)
+            self.assertEqual(refreshed["bfs"], "3")
+
+    def test_backfill_repairs_existing_relogin_risk_loop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RegistrationRepository(Path(tmp) / "results.sqlite3")
+            account_id = store.add_result(
+                {
+                    "email": "existing-loop@example.com",
+                    "status": "failure",
+                    "success": False,
+                    "failure_type": "sso_timeout",
+                    "failure_reason": "等待 SSO 超时",
+                    "bot_risk": True,
+                    "bfs": "7",
+                    "extra_json": json.dumps(
+                        {
+                            "relogin_status": "partial",
+                            "sso_check_status": "flagged",
+                        }
+                    ),
+                }
+            )
+
+            self.assertEqual(store.backfill_registration_risk_bot_risk(), 1)
+            refreshed = store.get_results_by_ids([account_id])[0]
+            self.assertEqual(refreshed["failure_type"], "registration_risk")
+            self.assertEqual(
+                refreshed["failure_reason"],
+                "重新登录 SSO 风控异常: botFlagSource=7",
+            )
+            self.assertEqual(store.backfill_registration_risk_bot_risk(), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

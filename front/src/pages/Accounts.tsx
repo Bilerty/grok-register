@@ -183,10 +183,11 @@ function emailDisableLabel(status: string) {
 type ReloginRecoveryKind = "sso_timeout" | "sso_token_exchange";
 
 function reloginRecoveryKind(
-  item: Pick<AccountRecord, "status" | "cpa_status" | "failure_type" | "failure_reason">,
+  item: Pick<AccountRecord, "status" | "cpa_status" | "failure_type" | "failure_reason" | "bot_risk">,
 ): ReloginRecoveryKind | null {
   // 重登成功后的旧记录可能还保留历史 failure_type；CPA 已成功时不再重复提醒。
-  if (item.status !== "failure" || item.cpa_status === "success") return null;
+  // 风控结论已经明确时，重复重登只会形成 sso_timeout -> 风控 -> 再重登的循环。
+  if (item.bot_risk || item.status !== "failure" || item.cpa_status === "success") return null;
   if (item.failure_type === "sso_timeout") return "sso_timeout";
   if (
     item.failure_type === "cpa"

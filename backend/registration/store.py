@@ -748,6 +748,8 @@ class RegistrationRepository:
         cpa_detail: Optional[Dict[str, Any]] = None,
         status: str = "success",
         error: str = "",
+        failure_type: str = "",
+        failure_reason: str = "",
         screenshot_path: str = "",
         diagnostics: Optional[Dict[str, Any]] = None,
     ) -> bool:
@@ -803,6 +805,23 @@ class RegistrationRepository:
                         "success": 1,
                         "failure_type": "",
                         "failure_reason": "",
+                    }
+                )
+                assignments.extend(
+                    [
+                        "status = :status",
+                        "success = :success",
+                        "failure_type = :failure_type",
+                        "failure_reason = :failure_reason",
+                    ]
+                )
+            elif str(failure_type or "").strip():
+                values.update(
+                    {
+                        "status": "failure",
+                        "success": 0,
+                        "failure_type": str(failure_type).strip(),
+                        "failure_reason": str(failure_reason or error or "").strip(),
                     }
                 )
                 assignments.extend(
@@ -976,14 +995,14 @@ class RegistrationRepository:
             return int(cursor.rowcount or 0)
 
     def backfill_registration_risk_bot_risk(self) -> int:
-        """把历史 registration_risk 失败记录补上 bot_risk 标记。
+        """补齐历史风控标记，并修复重登风控后遗留的 sso_timeout。
 
         只认 failure_reason 里带 botFlagSource 的行——那是服务端真正下了风控裁决
         的记录。registration_risk 也覆盖"sso 为空"这类前置条件失败，那些不是
         机器人标记，不能一并标上。
         """
         with self._connect() as conn:
-            cursor = conn.execute(
+            bot_risk_cursor = conn.execute(
                 """
                 UPDATE registration_results
                 SET bot_risk = 1
@@ -992,7 +1011,23 @@ class RegistrationRepository:
                   AND failure_reason LIKE '%botFlagSource%'
                 """
             )
-            return int(cursor.rowcount or 0)
+            relogin_cursor = conn.execute(
+                """
+                UPDATE registration_results
+                SET failure_type = 'registration_risk',
+                    failure_reason = CASE
+                        WHEN trim(COALESCE(bfs, '')) <> ''
+                            THEN '重新登录 SSO 风控异常: botFlagSource=' || trim(bfs)
+                        ELSE '重新登录 SSO 风控异常'
+                    END
+                WHERE status = 'failure'
+                  AND failure_type = 'sso_timeout'
+                  AND COALESCE(bot_risk, 0) = 1
+                  AND json_extract(extra_json, '$.relogin_status') = 'partial'
+                  AND json_extract(extra_json, '$.sso_check_status') = 'flagged'
+                """
+            )
+            return int(bot_risk_cursor.rowcount or 0) + int(relogin_cursor.rowcount or 0)
 
     def update_remote_import_status(
         self,
