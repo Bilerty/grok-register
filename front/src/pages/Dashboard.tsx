@@ -32,6 +32,11 @@ const shortcuts = [
   { to: "/settings/config", label: "查看配置", hint: "核对实际配置文件", icon: FileJson2 },
 ];
 
+function formatSuccessRate(success = 0, total = 0) {
+  if (total <= 0) return "—";
+  return `${Math.round((success / total) * 100)}%`;
+}
+
 export function DashboardPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [job, setJob] = useState<JobStatus | null>(null);
@@ -101,6 +106,20 @@ export function DashboardPage() {
               <div className="mt-1 text-xs text-slate-400">{item.hint}</div>
             </div>;
           })}
+        </section>
+        <section className="grid grid-cols-1 divide-y divide-slate-200 border-t border-slate-200 sm:grid-cols-2 sm:divide-x sm:divide-y-0" aria-label="注册成功率">
+          {[
+            { title: "今日注册成功率", value: formatSuccessRate(stats?.today_success, stats?.today_total), hint: `成功 ${stats?.today_success ?? 0} / 今日记录 ${stats?.today_total ?? 0}`, tone: "text-sky-700" },
+            { title: "总注册成功率", value: formatSuccessRate(stats?.success, stats?.total), hint: `成功 ${stats?.success ?? 0} / 总记录 ${stats?.total ?? 0}`, tone: "text-emerald-700" },
+          ].map((item) => (
+            <div key={item.title} className="flex items-center justify-between gap-4 bg-slate-50/50 px-4 py-3 sm:px-5">
+              <div className="min-w-0">
+                <div className="text-xs font-medium text-slate-600">{item.title}</div>
+                <div className="mt-1 truncate text-xs text-slate-400">{item.hint}</div>
+              </div>
+              <div className={`shrink-0 text-2xl font-semibold tabular-nums tracking-tight ${item.tone}`}>{loading ? "…" : item.value}</div>
+            </div>
+          ))}
         </section>
       </Card>
 
