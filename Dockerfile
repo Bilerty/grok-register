@@ -38,23 +38,28 @@ ENV PATH=/opt/venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     HOME=/home/app \
     XDG_CACHE_HOME=/opt/camoufox-cache \
+    CLOAKBROWSER_CACHE_DIR=/app/data/cloakbrowser-cache \
+    CLOAKBROWSER_AUTO_UPDATE=false \
     DISPLAY=:99 \
     GROK_WEB_HOST=0.0.0.0 \
     GROK_WEB_PORT=8787 \
     GROK_CONFIG_FILE=/app/data/config.json \
     GROK_FORCE_HEADED=1
 
-# Camoufox/Firefox 有头模式依赖 + Xvfb 虚拟显示器。
+# Camoufox/Firefox 与 CloakBrowser/Chromium 有头模式依赖 + Xvfb 虚拟显示器。
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates dumb-init gosu procps python3 xvfb xauth \
         libasound2t64 libatk1.0-0t64 libavcodec60 \
+        libatk-bridge2.0-0t64 libatspi2.0-0t64 libcups2t64 \
         libcairo-gobject2 libcairo2 libdbus-1-3 \
-        libfontconfig1 libfreetype6 libgdk-pixbuf-2.0-0 \
+        libdrm2 libfontconfig1 libfreetype6 libgbm1 libgdk-pixbuf-2.0-0 \
         libglib2.0-0t64 libgtk-3-0t64 libpango-1.0-0 \
         libpangocairo-1.0-0 libx11-6 libx11-xcb1 \
         libxcb-shm0 libxcb1 libxcomposite1 libxcursor1 \
         libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 \
-        libxrender1 libxtst6 fonts-liberation fonts-noto-color-emoji \
+        libxkbcommon0 libxrender1 libxshmfence1 libxss1 libxtst6 \
+        libnspr4 libnss3 fonts-freefont-ttf fonts-liberation \
+        fonts-noto-color-emoji fonts-unifont fonts-wqy-zenhei \
     && groupadd --gid "$APP_GID" app \
     && useradd --uid "$APP_UID" --gid "$APP_GID" --create-home --shell /bin/bash app \
     && rm -rf /var/lib/apt/lists/*
@@ -67,6 +72,7 @@ COPY --chown=app:app config.example.json requirements.txt ./
 COPY --chown=app:app --from=frontend-builder /build/front/dist ./front/dist/
 COPY --chown=app:app --chmod=755 docker/entrypoint.sh ./docker/entrypoint.sh
 COPY --chown=app:app docker/camoufox_smoke.py ./docker/camoufox_smoke.py
+COPY --chown=app:app docker/cloakbrowser_smoke.py ./docker/cloakbrowser_smoke.py
 
 RUN install -d -o app -g app /app/data /app/logs
 

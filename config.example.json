@@ -26,6 +26,7 @@
   "proxy": "",
   "enable_nsfw": true,
   "debug_mode": false,
+  "browser_engine": "camoufox",
   "browser_headless": false,
   "browser_locale": "en-US",
   "close_browser_on_stop": false,

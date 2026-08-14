@@ -76,6 +76,26 @@ class ProxyRoutingTests(unittest.TestCase):
             },
         )
 
+    def test_cloakbrowser_reuses_authenticated_proxy_parsing(self):
+        browser_session.configure(
+            get_proxies=lambda: {
+                "https": "http://user%40mail:p%40ss%3Aword@proxy.example.com:7897"
+            },
+            is_debug=lambda: False,
+            is_headless=lambda: False,
+            get_locale=lambda: "en-US",
+            get_engine=lambda: "cloakbrowser",
+        )
+        options = browser_session.create_browser_options(unique_profile=False)
+        self.assertEqual(
+            options["proxy"],
+            {
+                "server": "http://proxy.example.com:7897",
+                "username": "user@mail",
+                "password": "p@ss:word",
+            },
+        )
+
     def test_http_client_sends_encoded_proxy_credentials_as_basic_auth(self):
         captured = {}
 

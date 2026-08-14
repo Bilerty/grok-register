@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { CheckCircle2, Copy, History, Search, Trash2, XCircle } from "lucide-react";
 import { Badge, Button, Card, EmptyState, Input, PageHeader, PaginationBar, Select, Toast } from "@/components/ui";
 import { AccountPageContext } from "@/components/AccountPageContext";
-import { buildReloginReportText } from "@/components/ReloginReportDialog";
+import { buildReloginReportText, reloginSsoCheckLabel } from "@/components/ReloginReportDialog";
 import {
   clearReloginHistory,
   loadReloginHistory,
@@ -174,7 +174,9 @@ export function ReloginHistoryPage() {
                       <div className="min-w-0 flex-1">
                         <div className="break-all text-sm font-medium text-slate-900">{detailItem.email || `账号 #${detailItem.account_id}`}</div>
                         <div className={`mt-1 break-all text-xs ${detailItem.status === "failed" ? "text-red-700" : "text-slate-500"}`}>
-                          {detailItem.status === "failed" ? detailItem.error || "未知错误" : "重新登录成功"}
+                          {detailItem.status === "failed"
+                            ? detailItem.error || "未知错误"
+                            : reloginSsoCheckLabel(detailItem) || "重新登录成功"}
                         </div>
                         {detailItem.status === "failed" && (detailItem.stage || detailItem.error_type || detailItem.url || detailItem.visible_error) ? (
                           <div className="mt-3 grid gap-2 rounded-lg border border-red-100 bg-red-50/50 p-3 text-xs sm:grid-cols-2">

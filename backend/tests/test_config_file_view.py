@@ -70,6 +70,14 @@ class ProxyConfigUpdateTests(unittest.TestCase):
         self.assertIs(result["config"]["sso_detailed_risk_check"], True)
         save.assert_called_once_with()
 
+    def test_browser_engine_accepts_cloakbrowser_and_falls_back_to_camoufox(self):
+        with patch.object(gr, "load_config"), patch.object(gr, "save_config"):
+            selected = _apply_config_updates({"browser_engine": "cloakbrowser"})
+            fallback = _apply_config_updates({"browser_engine": "unknown"})
+
+        self.assertEqual(selected["config"]["browser_engine"], "cloakbrowser")
+        self.assertEqual(fallback["config"]["browser_engine"], "camoufox")
+
 
 if __name__ == "__main__":
     unittest.main()

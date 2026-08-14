@@ -213,6 +213,30 @@ class ReloginJobCoordinatorTests(unittest.TestCase):
 
         self.assertEqual(coordinator.status()["success_count"], 2)
 
+    def test_success_item_includes_sso_check_result(self):
+        store = _Store([{"id": 1, "email": "one@example.com", "password": "secret"}])
+        coordinator = ReloginJobCoordinator()
+        outcome = {
+            "error": "",
+            "sso_check_status": "clean",
+            "sso_check_verdict": "clean",
+            "bot_flag_source": 0,
+            "sso_checked_at": "2026-08-14T00:00:00+00:00",
+            "sso_check_attempts": 1,
+        }
+        with (
+            mock.patch.object(engine, "get_registration_repository", return_value=store),
+            mock.patch.object(coordinator, "_run_record", return_value=outcome),
+        ):
+            coordinator.start(1)
+            self._wait_idle(coordinator)
+
+        item = coordinator.status()["items"][0]
+        self.assertEqual(item["status"], "success")
+        self.assertEqual(item["sso_check_status"], "clean")
+        self.assertEqual(item["bot_flag_source"], 0)
+        self.assertEqual(item["sso_check_attempts"], 1)
+
     def test_successful_relogin_enqueues_grokiq_webhook_after_grok_build_import(self):
         store = mock.Mock()
         store.get_results_by_ids.return_value = [
@@ -272,6 +296,20 @@ class ReloginJobCoordinatorTests(unittest.TestCase):
             "status": "success",
             "grok2api_remote_result": {"formats": {"grok_build": {"created": 1}}},
         }
+        risk_state = {
+            "mode": "relogin_detailed",
+            "verdict": "clean",
+            "bot_flag_source": 0,
+            "bot_flag": {"source": 0, "found": True},
+        }
+        risk_compact = {
+            "status": "clean",
+            "verdict": "clean",
+            "bot_flag_source": 0,
+            "checked_at": "2026-08-14T00:00:00+00:00",
+            "attempts": 1,
+            "error": "",
+        }
 
         with tempfile.TemporaryDirectory() as tmp:
             account_file = str(Path(tmp) / "ok@example.com.txt")
@@ -287,6 +325,10 @@ class ReloginJobCoordinatorTests(unittest.TestCase):
                 mock.patch.object(engine, "account_file_for_email", return_value=account_file),
                 mock.patch.object(engine, "add_sso_to_cpa", side_effect=capture_detail),
                 mock.patch(
+                    "backend.web.sso_check_jobs.inspect_sso_token",
+                    return_value=(risk_state, risk_compact),
+                ) as inspect_sso,
+                mock.patch(
                     "backend.registration.login_flow.login_with_password",
                     return_value="sso",
                 ),
@@ -296,16 +338,115 @@ class ReloginJobCoordinatorTests(unittest.TestCase):
                     return_value={"event_id": "registration:7:grok2api-imported"},
                 ) as enqueue,
             ):
-                error = coordinator._run_record(record, store)
+                outcome = coordinator._run_record(record, store)
 
-        self.assertEqual(error, "")
+        self.assertEqual(outcome["error"], "")
+        self.assertEqual(outcome["sso_check_status"], "clean")
+        self.assertEqual(outcome["bot_flag_source"], 0)
+        inspect_sso.assert_called_once()
+        self.assertEqual(inspect_sso.call_args.args[:2], ("sso", "ok@example.com"))
+        self.assertEqual(inspect_sso.call_args.kwargs["mode"], "relogin_detailed")
         store.update_relogin_result.assert_called_once()
         self.assertEqual(store.update_relogin_result.call_args.kwargs["status"], "success")
+        store.update_sso_check_result.assert_called_once_with(
+            7,
+            risk_state=risk_state,
+            status="clean",
+        )
         enqueue.assert_called_once()
         self.assertEqual(enqueue.call_args.args[1], 7)
         self.assertEqual(
             enqueue.call_args.args[2]["grok2api_remote_result"]["formats"]["grok_build"],
             {"created": 1},
+        )
+
+    def test_flagged_sso_check_stops_auth_rebuild_and_persists_risk(self):
+        import tempfile
+        from pathlib import Path
+
+        store = mock.Mock()
+        store.update_relogin_result.return_value = True
+        store.update_sso_check_result.return_value = True
+        coordinator = ReloginJobCoordinator()
+        record = {
+            "id": 9,
+            "email": "risk@example.com",
+            "password": "secret",
+            "cpa_enabled": True,
+            "cpa_status": "success",
+            "cpa_auth_path": "/old/cpa.json",
+            "grok2api_auth_path": "/old/grok2api.json",
+            "bot_risk": False,
+            "bfs": "0",
+        }
+        risk_state = {
+            "mode": "relogin_detailed",
+            "verdict": "flagged",
+            "bot_flag_source": 3,
+            "bot_flag_details": "policy=test,event=fixture",
+            "bot_flag": {"source": 3, "found": True, "flagged": True},
+        }
+        risk_compact = {
+            "status": "flagged",
+            "verdict": "flagged",
+            "bot_flag_source": 3,
+            "checked_at": "2026-08-14T00:00:00+00:00",
+            "attempts": 1,
+            "error": "",
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            account_file = str(Path(tmp) / "risk@example.com.txt")
+            with (
+                mock.patch.object(engine, "load_config"),
+                mock.patch.object(engine, "_wire_runtime_modules"),
+                mock.patch.object(engine._bs, "allow_browser_launches"),
+                mock.patch.object(engine, "account_file_for_email", return_value=account_file),
+                mock.patch.object(engine, "add_sso_to_cpa") as add_sso,
+                mock.patch(
+                    "backend.web.sso_check_jobs.inspect_sso_token",
+                    return_value=(risk_state, risk_compact),
+                ),
+                mock.patch(
+                    "backend.registration.login_flow.login_with_password",
+                    return_value="new-sso",
+                ),
+                mock.patch(
+                    "backend.registration.login_flow.capture_login_diagnostics",
+                    return_value={},
+                ),
+                mock.patch(
+                    "backend.registration.login_flow.capture_login_failure",
+                    return_value="",
+                ),
+                mock.patch("backend.automation.session.stop_browser"),
+                mock.patch(
+                    "backend.web.relogin_jobs.enqueue_relogin_grokiq_notification"
+                ) as enqueue,
+            ):
+                outcome = coordinator._run_record(record, store)
+
+        self.assertIn("SSO 风控异常", outcome["error"])
+        self.assertEqual(outcome["sso_check_status"], "flagged")
+        self.assertEqual(outcome["bot_flag_source"], 3)
+        add_sso.assert_not_called()
+        enqueue.assert_not_called()
+        self.assertEqual(store.update_sso_check_result.call_count, 2)
+        self.assertTrue(
+            all(
+                call == mock.call(9, risk_state=risk_state, status="flagged")
+                for call in store.update_sso_check_result.call_args_list
+            )
+        )
+        store.update_relogin_result.assert_called_once()
+        saved = store.update_relogin_result.call_args.kwargs
+        self.assertEqual(saved["status"], "partial")
+        self.assertTrue(saved["cpa_detail"]["bot_risk"])
+        self.assertEqual(saved["cpa_detail"]["bfs"], 3)
+        self.assertEqual(saved["cpa_detail"]["cpa_auth_path"], "/old/cpa.json")
+        self.assertEqual(
+            saved["cpa_detail"]["grok2api_auth_path"],
+            "/old/grok2api.json",
         )
 
 

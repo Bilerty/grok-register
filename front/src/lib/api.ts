@@ -145,6 +145,12 @@ export type ReloginItem = {
   screenshot_name?: string;
   captured_at?: string;
   traceback?: string;
+  sso_check_status?: "clean" | "flagged" | "unknown" | "failed";
+  sso_check_verdict?: string;
+  bot_flag_source?: number | string | null;
+  sso_check_error?: string;
+  sso_checked_at?: string;
+  sso_check_attempts?: number;
 };
 
 export type ReloginStatus = {

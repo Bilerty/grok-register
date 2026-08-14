@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""注册流程使用的页面操作适配器。
+"""注册流程使用的 Playwright 页面操作适配器。
 
-对上层提供稳定的页面与元素接口，在内部映射到 Camoufox/Playwright，从而将
-业务步骤与浏览器驱动细节分离。
+对上层提供稳定的页面与元素接口，在内部映射到 Playwright，从而让 Camoufox
+与 CloakBrowser 共用同一套注册步骤。
 """
 from __future__ import annotations
 
@@ -564,12 +564,16 @@ class _PageWaiter:
 # ─── Browser 适配器 ────────────────────────────────────────────────────
 
 class CamoufoxBrowser:
-    """把 Camoufox Browser/Context 包装成 DrissionPage browser 接口。"""
+    """把 Playwright Browser/Context 包装成 DrissionPage browser 接口。
 
-    def __init__(self, browser=None, context=None, camoufox_instance=None):
+    类名保留用于兼容已有导入；Camoufox 与 CloakBrowser 都复用此适配器。
+    """
+
+    def __init__(self, browser=None, context=None, camoufox_instance=None, engine_name="camoufox"):
         self._browser = browser
         self._context = context
         self._camoufox = camoufox_instance
+        self.engine_name = str(engine_name or "camoufox")
         self.user_data_path = ""
 
     def get_tabs(self):
@@ -621,3 +625,8 @@ class CamoufoxBrowser:
     @property
     def raw(self):
         return self._browser or self._context
+
+
+# 新代码使用中性名称；旧名称继续保留，避免影响现有调用方。
+BrowserAdapter = CamoufoxBrowser
+PageAdapter = CamoufoxPage

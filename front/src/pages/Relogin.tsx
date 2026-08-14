@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { CheckCircle2, History, ListChecks, Loader2, RefreshCcw, Search, ShieldAlert, X, XCircle } from "lucide-react";
 import { AccountEmailLabel } from "@/components/AccountEmailIcon";
 import { AccountPageContext } from "@/components/AccountPageContext";
+import { reloginSsoCheckLabel } from "@/components/ReloginReportDialog";
 import { Badge, Button, Card, EmptyState, Input, PageHeader, PaginationBar, Select, Toast } from "@/components/ui";
 import { api, type AccountRecord, type ReloginItem, type ReloginStatus } from "@/lib/api";
 import { appendReloginHistory } from "@/lib/reloginHistory";
@@ -24,16 +25,26 @@ function ReloginResultList({
           <div className="min-w-0 flex-1">
             <AccountEmailLabel
               email={item.email || `账号 #${item.account_id}`}
-              botRisk={!!botRiskByAccountId.get(item.account_id)}
+              botRisk={item.sso_check_status === "flagged" || !!botRiskByAccountId.get(item.account_id)}
               emailClassName="text-sm text-slate-900"
             />
-            {botRiskByAccountId.get(item.account_id) ? (
+            {item.sso_check_status ? (
+              <div className="mt-1">
+                <Badge variant={item.sso_check_status === "flagged" ? "destructive" : item.sso_check_status === "clean" ? "success" : "warning"}>
+                  {item.sso_check_status === "flagged" ? <ShieldAlert className="mr-1 h-3 w-3" aria-hidden="true" /> : null}
+                  {reloginSsoCheckLabel(item)}
+                </Badge>
+              </div>
+            ) : botRiskByAccountId.get(item.account_id) ? (
               <div className="mt-1">
                 <Badge variant="warning">
                   <ShieldAlert className="mr-1 h-3 w-3" aria-hidden="true" />
                   风控标记
                 </Badge>
               </div>
+            ) : null}
+            {item.sso_check_error && item.sso_check_error !== item.error ? (
+              <div className="mt-1 break-all text-xs text-amber-700">SSO 检查：{item.sso_check_error}</div>
             ) : null}
             {item.error ? <div className="mt-1 break-all text-xs text-red-700">{item.error}</div> : null}
             {item.status === "failed" && (item.stage || item.error_type || item.url) ? (
@@ -250,7 +261,7 @@ export function ReloginPage() {
 
   const start = async () => {
     if (!selectedIds.length || status?.running) return;
-    if (!window.confirm(`重新登录选中的 ${selectedIds.length} 个账号并刷新 SSO 与授权文件？`)) return;
+    if (!window.confirm(`重新登录选中的 ${selectedIds.length} 个账号，刷新 SSO、检查风控并重建授权文件？`)) return;
     setStarting(true);
     try {
       const result = await api.startBatchRelogin(selectedIds);
@@ -291,7 +302,7 @@ export function ReloginPage() {
       <AccountPageContext crumbs={[{ label: "重新登录" }]} />
       <PageHeader
         title="重新登录"
-        description="集中选择已有账号，通过保存的邮箱和密码刷新 SSO、CPA 与 Grok2API 授权文件。"
+        description="集中选择已有账号，刷新 SSO 后自动检查账号风控，再重建 CPA 与 Grok2API 授权文件。"
         actions={<>
           <Button variant="outline" disabled={!visibleResults.length} onClick={() => setResultsOpen(true)}>
             <ListChecks className="h-4 w-4" aria-hidden="true" />

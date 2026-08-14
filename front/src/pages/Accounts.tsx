@@ -284,7 +284,7 @@ function ReloginRecoveryHint({
             </div>
             <div className="text-sm font-semibold leading-5">{running ? (stage || "正在重新登录") : title}</div>
             <p className="mt-1 text-xs leading-5 text-amber-800">
-              点击立即重登刷新 SSO，成功后可获取 CPA / Grok2API 授权文件。
+              点击立即重登刷新 SSO；系统会先检查账号风控，再重建 CPA / Grok2API 授权文件。
             </p>
           </div>
         </div>
@@ -986,7 +986,7 @@ export function AccountsPage() {
 
   const onBatchRelogin = async () => {
     if (!selectedIds.length) return;
-    if (!window.confirm(`按顺序重新登录选中的 ${selectedIds.length} 个账号并刷新授权文件？`)) return;
+    if (!window.confirm(`按顺序重新登录选中的 ${selectedIds.length} 个账号，检查风控并刷新授权文件？`)) return;
     setBatchMenuOpen(false);
     setBatchBusy("relogin");
     try {
@@ -1073,7 +1073,7 @@ export function AccountsPage() {
     }
     if (
       confirm
-      && !window.confirm(`使用已保存的账号密码重新登录 ${item.email}，刷新 SSO 和授权文件？`)
+      && !window.confirm(`使用已保存的账号密码重新登录 ${item.email}，刷新 SSO、检查风控并重建授权文件？`)
     ) return;
     try {
       const result = await api.startRelogin(item.id);

@@ -2,14 +2,103 @@
 """批量 SSO 详细检查后台任务。"""
 from __future__ import annotations
 
-import json
 import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from backend.web.account_exports import read_sso_token
+
+
+def inspect_sso_token(
+    token: str,
+    email: str,
+    *,
+    proxy: str = "",
+    user_agent: str = "",
+    mode: str = "batch_detailed",
+    stage_callback: Optional[Callable[[str], None]] = None,
+    retry_delays: Sequence[float] = (0, 2, 4, 8),
+    sleep_callback: Optional[Callable[[float], None]] = None,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """执行一次可复用的详细 SSO 风控检查并返回完整与精简结果。"""
+    from backend.integrations.sso_checker import SsoCheckConfig, SsoChecker, SsoCredential
+
+    checker = SsoChecker(
+        SsoCheckConfig(
+            proxy=str(proxy or ""),
+            user_agent=str(user_agent or ""),
+        )
+    )
+    credential = SsoCredential(
+        str(token or "").strip(),
+        expected_email=str(email or "").strip(),
+        label=str(email or "").strip(),
+    )
+    delays = tuple(retry_delays) or (0,)
+    sleeper = sleep_callback or time.sleep
+    result = None
+    state: Dict[str, Any] = {}
+    attempt = 0
+    for attempt, delay in enumerate(delays, start=1):
+        if delay:
+            if stage_callback:
+                stage_callback(
+                    f"风控字段为空，{delay:g}s 后复查（{attempt}/{len(delays)}）"
+                )
+            sleeper(delay)
+        if stage_callback:
+            stage_callback(f"读取会话与 botFlag（{attempt}/{len(delays)}）")
+        result = checker.check(credential)
+        state = result.to_dict(flagged_sources=checker.config.flagged_sources)
+        source = (state.get("bot_flag") or {}).get("source")
+        if source is not None and source != "":
+            break
+
+    if result is None:  # pragma: no cover - delays 始终至少包含一次检查
+        raise RuntimeError("SSO 检查未执行")
+    bot_flag = dict(state.get("bot_flag") or {})
+    source = bot_flag.get("source")
+    verdict = str(state.get("verdict") or "error")
+    if source in (0, "0"):
+        status = "clean"
+    elif source is not None and source != "":
+        status = "flagged"
+    elif verdict in {"error"}:
+        status = "failed"
+    else:
+        status = "unknown"
+    state.update(
+        {
+            "enabled": True,
+            "mode": str(mode or "detailed"),
+            "found": bool(bot_flag.get("found")),
+            "flagged": status == "flagged",
+            "bot_flag_source": source,
+            "bot_flag_details": str(bot_flag.get("details") or ""),
+            "policy": str(bot_flag.get("policy") or ""),
+            "risk": bot_flag.get("risk"),
+            "event": str(bot_flag.get("event") or ""),
+            "denied": bool(bot_flag.get("denied")),
+            "attempts": attempt,
+        }
+    )
+    compact = {
+        "status": status,
+        "verdict": verdict,
+        "bot_flag_source": source,
+        "valid_session": bool(state.get("valid_session")),
+        "email_match": state.get("email_match"),
+        "policy": str(bot_flag.get("policy") or ""),
+        "risk": bot_flag.get("risk"),
+        "event": str(bot_flag.get("event") or ""),
+        "checked_at": str(state.get("checked_at") or ""),
+        "response_ms": int(state.get("response_ms") or 0),
+        "attempts": attempt,
+        "error": str(state.get("error") or ""),
+    }
+    return state, compact
 
 
 class SsoCheckJobCoordinator:
@@ -233,7 +322,6 @@ class SsoCheckJobCoordinator:
         raise FileNotFoundError("未找到该账号对应的 SSO 文件")
 
     def _run_record(self, record: Dict[str, Any], store: Any) -> Dict[str, Any]:
-        from backend.integrations.sso_checker import SsoCheckConfig, SsoChecker, SsoCredential
         from backend.registration import engine as gr
 
         gr.load_config()
@@ -241,69 +329,14 @@ class SsoCheckJobCoordinator:
         email = str(record.get("email") or "").strip()
         path = self._find_sso_file(record, Path(gr.DATA_DIR), Path(gr.APP_DIR))
         token = read_sso_token(path)
-        checker = SsoChecker(
-            SsoCheckConfig(
-                proxy=gr._resolve_cpa_proxy(),
-                user_agent=gr.get_user_agent(),
-            )
+        state, compact = inspect_sso_token(
+            token,
+            email,
+            proxy=gr._resolve_cpa_proxy(),
+            user_agent=gr.get_user_agent(),
+            mode="batch_detailed",
+            stage_callback=lambda stage: self._set(stage=stage),
         )
-        credential = SsoCredential(token, expected_email=email, label=email)
-        retry_delays = (0, 2, 4, 8)
-        result = None
-        state: Dict[str, Any] = {}
-        for attempt, delay in enumerate(retry_delays, start=1):
-            if delay:
-                self._set(stage=f"风控字段为空，{delay}s 后复查（{attempt}/{len(retry_delays)}）")
-                time.sleep(delay)
-            self._set(stage=f"读取会话与 botFlag（{attempt}/{len(retry_delays)}）")
-            result = checker.check(credential)
-            state = result.to_dict(flagged_sources=checker.config.flagged_sources)
-            source = (state.get("bot_flag") or {}).get("source")
-            if source is not None and source != "":
-                break
-
-        if result is None:  # pragma: no cover - retry_delays 始终至少包含一次检查
-            raise RuntimeError("SSO 检查未执行")
-        bot_flag = dict(state.get("bot_flag") or {})
-        source = bot_flag.get("source")
-        verdict = str(state.get("verdict") or "error")
-        if source in (0, "0"):
-            status = "clean"
-        elif source is not None and source != "":
-            status = "flagged"
-        elif verdict in {"error"}:
-            status = "failed"
-        else:
-            status = "unknown"
-        state.update(
-            {
-                "enabled": True,
-                "mode": "batch_detailed",
-                "found": bool(bot_flag.get("found")),
-                "flagged": status == "flagged",
-                "bot_flag_source": source,
-                "bot_flag_details": str(bot_flag.get("details") or ""),
-                "policy": str(bot_flag.get("policy") or ""),
-                "risk": bot_flag.get("risk"),
-                "event": str(bot_flag.get("event") or ""),
-                "denied": bool(bot_flag.get("denied")),
-                "attempts": attempt,
-            }
-        )
-        compact = {
-            "status": status,
-            "verdict": verdict,
-            "bot_flag_source": source,
-            "valid_session": bool(state.get("valid_session")),
-            "email_match": state.get("email_match"),
-            "policy": str(bot_flag.get("policy") or ""),
-            "risk": bot_flag.get("risk"),
-            "event": str(bot_flag.get("event") or ""),
-            "checked_at": str(state.get("checked_at") or ""),
-            "response_ms": int(state.get("response_ms") or 0),
-            "attempts": attempt,
-            "error": str(state.get("error") or ""),
-        }
         self._persist_result(store, account_id, state, compact)
         return compact
 

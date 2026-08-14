@@ -199,6 +199,16 @@ class ReloginJobCoordinator:
                                     value = str(outcome.get(key) or "")
                                     if value:
                                         item[key] = value
+                                for key in (
+                                    "sso_check_status",
+                                    "sso_check_verdict",
+                                    "bot_flag_source",
+                                    "sso_check_error",
+                                    "sso_checked_at",
+                                    "sso_check_attempts",
+                                ):
+                                    if key in outcome and outcome.get(key) is not None:
+                                        item[key] = outcome[key]
                         self._completed_count += 1
                         if error:
                             self._failed_count += 1
@@ -242,7 +252,7 @@ class ReloginJobCoordinator:
             raise
         return self.status()
 
-    def _run_record(self, record: Dict[str, Any], store: Any) -> str:
+    def _run_record(self, record: Dict[str, Any], store: Any) -> Dict[str, Any]:
         from backend.automation.session import stop_browser
         from backend.registration import engine as gr
         from backend.registration.login_flow import (
@@ -250,12 +260,66 @@ class ReloginJobCoordinator:
             capture_login_failure,
             login_with_password,
         )
+        from backend.web.sso_check_jobs import inspect_sso_token
 
         account_id = int(record.get("id") or 0)
         email = str(record.get("email") or "").strip()
         password = str(record.get("password") or "")
-        cpa_detail: Dict[str, Any] = {}
+        # 风控检查发生在授权重建之前；若命中风控，需要保存新 SSO，同时保留
+        # 该账号原有授权文件信息，避免受控终止把旧路径清空。
+        cpa_detail: Dict[str, Any] = {
+            "enabled": bool(record.get("cpa_enabled")),
+            "status": str(record.get("cpa_status") or "not_attempted"),
+            "auth_info": str(record.get("auth_info") or ""),
+            "auth_path": str(record.get("auth_path") or ""),
+            "cpa_auth_path": str(record.get("cpa_auth_path") or ""),
+            "grok2api_auth_path": str(record.get("grok2api_auth_path") or ""),
+            "cpa_remote_status": str(record.get("cpa_remote_status") or "not_configured"),
+            "cpa_remote_imported_at": str(record.get("cpa_remote_imported_at") or ""),
+            "cpa_remote_error": str(record.get("cpa_remote_error") or ""),
+            "grok2api_remote_status": str(
+                record.get("grok2api_remote_status") or "not_configured"
+            ),
+            "grok2api_remote_imported_at": str(
+                record.get("grok2api_remote_imported_at") or ""
+            ),
+            "grok2api_remote_error": str(record.get("grok2api_remote_error") or ""),
+            "sub2api_remote_status": str(record.get("sub2api_remote_status") or "disabled"),
+            "sub2api_remote_imported_at": str(
+                record.get("sub2api_remote_imported_at") or ""
+            ),
+            "sub2api_remote_error": str(record.get("sub2api_remote_error") or ""),
+            "bot_risk": bool(record.get("bot_risk")),
+            "bfs": "" if record.get("bfs") is None else str(record.get("bfs")),
+        }
         account_file = ""
+        risk_state: Dict[str, Any] = {}
+        risk_compact: Dict[str, Any] = {}
+
+        def risk_outcome_fields() -> Dict[str, Any]:
+            if not risk_compact:
+                return {}
+            return {
+                "sso_check_status": str(risk_compact.get("status") or "unknown"),
+                "sso_check_verdict": str(risk_compact.get("verdict") or ""),
+                "bot_flag_source": risk_compact.get("bot_flag_source"),
+                "sso_check_error": str(risk_compact.get("error") or ""),
+                "sso_checked_at": str(risk_compact.get("checked_at") or ""),
+                "sso_check_attempts": int(risk_compact.get("attempts") or 0),
+            }
+
+        def persist_risk_result() -> None:
+            if not risk_state or not risk_compact:
+                return
+            updater = getattr(store, "update_sso_check_result", None)
+            if callable(updater):
+                saved = updater(
+                    account_id,
+                    risk_state=risk_state,
+                    status=str(risk_compact.get("status") or "unknown"),
+                )
+                if saved is False:
+                    raise RuntimeError("SSO 风控检查结果保存失败")
 
         def log(message: str) -> None:
             text = str(message or "")
@@ -284,6 +348,84 @@ class ReloginJobCoordinator:
             os.replace(temporary, account_path)
             account_file = str(account_path)
 
+            self._set(stage="检查 SSO 风控")
+            try:
+                risk_state, risk_compact = inspect_sso_token(
+                    sso,
+                    email,
+                    proxy=gr._resolve_cpa_proxy(),
+                    user_agent=gr.get_user_agent(),
+                    mode="relogin_detailed",
+                    stage_callback=lambda stage: self._set(stage=f"SSO 风控：{stage}"),
+                )
+            except Exception as risk_exc:
+                checked_at = datetime.datetime.now(datetime.timezone.utc).isoformat(
+                    timespec="seconds"
+                )
+                risk_error = str(risk_exc) or risk_exc.__class__.__name__
+                risk_state = {
+                    "enabled": True,
+                    "mode": "relogin_detailed",
+                    "verdict": "error",
+                    "valid_session": False,
+                    "email_match": None,
+                    "checked_at": checked_at,
+                    "response_ms": 0,
+                    "error": risk_error,
+                    "bot_flag": {
+                        "found": False,
+                        "source": None,
+                        "details": "",
+                        "policy": "",
+                        "risk": None,
+                        "event": "",
+                        "denied": False,
+                    },
+                    "found": False,
+                    "flagged": False,
+                    "bot_flag_source": None,
+                    "bot_flag_details": "",
+                    "policy": "",
+                    "risk": None,
+                    "event": "",
+                    "denied": False,
+                    "attempts": 0,
+                }
+                risk_compact = {
+                    "status": "failed",
+                    "verdict": "error",
+                    "bot_flag_source": None,
+                    "valid_session": False,
+                    "email_match": None,
+                    "policy": "",
+                    "risk": None,
+                    "event": "",
+                    "checked_at": checked_at,
+                    "response_ms": 0,
+                    "attempts": 0,
+                    "error": risk_error,
+                }
+                self._set(stage="SSO 风控检查失败，继续重建授权")
+
+            cpa_detail["sso_risk_check"] = dict(risk_state)
+            if str(risk_compact.get("status") or "") == "flagged":
+                source = risk_compact.get("bot_flag_source")
+                details = str(
+                    risk_state.get("bot_flag_details")
+                    or f"botFlagSource={source},policy=unknown,event=unknown"
+                )
+                cpa_detail.update(
+                    {
+                        "bot_risk": True,
+                        "bfs": "" if source is None else source,
+                    }
+                )
+                persist_risk_result()
+                self._set(stage="SSO 风控异常")
+                raise RuntimeError(
+                    f"SSO 风控异常，已停止授权重建: botFlagSource={source} {details}"
+                )
+
             self._set(stage="重建 CPA / Grok2API 文件")
             cpa_ok = gr.add_sso_to_cpa(
                 sso,
@@ -301,6 +443,7 @@ class ReloginJobCoordinator:
                 status="success",
                 error="",
             )
+            persist_risk_result()
             enqueue_relogin_grokiq_notification(
                 store,
                 account_id,
@@ -308,7 +451,7 @@ class ReloginJobCoordinator:
                 gr.config,
                 log_callback=log,
             )
-            return ""
+            return {"error": "", **risk_outcome_fields()}
         except Exception as exc:
             error = str(exc) or exc.__class__.__name__
             failure_stage = str(self.status().get("stage") or "重新登录")
@@ -352,6 +495,12 @@ class ReloginJobCoordinator:
                     "traceback": trace_text,
                 },
             )
+            # 授权重建失败也要保留已经完成的 SSO 检查；同时在 partial 更新
+            # 之后再次落库，确保明确的 clean/flagged 结论最终覆盖风险列。
+            try:
+                persist_risk_result()
+            except Exception:
+                pass
             return {
                 "error": error,
                 "stage": failure_stage,
@@ -365,6 +514,7 @@ class ReloginJobCoordinator:
                 "screenshot_name": screenshot_name,
                 "captured_at": captured_at.isoformat(timespec="seconds"),
                 "traceback": trace_text[-8000:],
+                **risk_outcome_fields(),
             }
         finally:
             try:

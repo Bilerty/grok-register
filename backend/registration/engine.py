@@ -308,6 +308,9 @@ DEFAULT_CONFIG = {
     "proxy": "http://127.0.0.1:7890",
     "enable_nsfw": True,
     "debug_mode": False,
+    "browser_engine": _bs.normalize_browser_engine(
+        os.environ.get("GROK_BROWSER_ENGINE", "camoufox")
+    ),
     "browser_headless": False,
     "browser_locale": "en-US",
     "close_browser_on_stop": False,
@@ -752,6 +755,9 @@ def load_config():
             config = {**DEFAULT_CONFIG, **loaded}
         except Exception:
             config = DEFAULT_CONFIG.copy()
+    config["browser_engine"] = _bs.normalize_browser_engine(
+        config.get("browser_engine", "camoufox")
+    )
     return config
 
 
@@ -2684,6 +2690,10 @@ def is_browser_headless():
     return bool(config.get("browser_headless", False))
 
 
+def get_browser_engine() -> str:
+    return _bs.normalize_browser_engine(config.get("browser_engine", "camoufox"))
+
+
 def get_browser_locale() -> str:
     value = str(config.get("browser_locale", "en-US") or "en-US").strip()
     return value if value in {"en-US", "zh-CN"} else "en-US"
@@ -2733,6 +2743,7 @@ def _wire_runtime_modules():
         is_debug=is_debug_mode,
         is_headless=is_browser_headless,
         get_locale=get_browser_locale,
+        get_engine=get_browser_engine,
         extension_path=EXTENSION_PATH,
     )
     _rf.configure(

@@ -15,7 +15,7 @@
 | --- | --- |
 | `backend.web` | FastAPI 路由、管理员会话、配置接口和任务协调 |
 | `backend.registration` | 注册编排、页面步骤、结果仓储和关联产物 |
-| `backend.automation` | Camoufox 生命周期及页面操作适配 |
+| `backend.automation` | Camoufox / CloakBrowser 生命周期及共用页面操作适配 |
 | `backend.integrations` | 代理、连通性检查和授权凭据交换 |
 | `backend.mailbox` | 各邮箱渠道与验证码解析 |
 | `backend.shared` | 项目路径等跨包运行时基础设施 |
@@ -84,15 +84,17 @@ backend/tests/         # 后端单元测试
 - `GET/PUT /api/config` 读写配置
 - `POST /api/job/start` 启动注册
 - `POST /api/job/stop` 停止注册
-- `POST /api/browser/kill-all` 请求停止任务并终止全部 Camoufox 进程
+- `POST /api/browser/kill-all` 请求停止任务并终止全部托管浏览器进程
 - `GET /api/job/logs` 轮询日志
 - `POST /api/connectivity` 连通性检查
 
 设置页已按“基础注册 / CPA / Auth / 邮箱服务 / Outlook 邮箱池”拆分子菜单。邮箱服务下拉使用中文名称，并只显示当前服务商需要的配置字段；当前 6 种邮箱来源均已接入注册流程。
 
-设置页可启用“无头浏览器”，让 Camoufox 不显示窗口运行。该模式会处理常见无头指纹差异，但站点风控仍可能结合环境与行为判断，默认保持关闭。
+设置页可选择 `Camoufox`（默认）或 `CloakBrowser` 浏览器后端，并可启用“无头浏览器”。两个后端共用注册步骤、代理、语言与结果处理逻辑。
 
-注册页的“终止所有 Camoufox”用于异常兜底：先请求停止当前任务，再终止 Camoufox 进程树并清理本项目创建的临时资料目录。紧急终止后，下一次手动启动注册任务才会重新允许浏览器启动。
+账号重新登录获取新 SSO 后会自动执行与批量 SSO Check 相同的详细风控检查。`botFlagSource=0` 继续重建授权文件；非 `0` 会写入账号风控标记并停止本次授权重建；字段为空时按既有策略短时复查。
+
+注册页的“终止全部浏览器”用于异常兜底：先请求停止当前任务，再终止 Camoufox 与 CloakBrowser 进程树并清理本项目创建的临时资料目录。紧急终止后，下一次手动启动注册任务才会重新允许浏览器启动。
 
 注册过程中发生页面交互、验证码、流程卡住等失败时，系统会在活动页面仍可访问的情况下保存全页截图到 `data/screenshots/registration-failures/`。截图路径随失败记录写入 SQLite，可在账号管理详情中直接预览；删除账号并勾选删除关联文件时会同步清理截图。
 

@@ -71,6 +71,7 @@ CONFIG_PUBLIC_KEYS = (
     "proxy",
     "enable_nsfw",
     "debug_mode",
+    "browser_engine",
     "browser_headless",
     "browser_locale",
     "close_browser_on_stop",
@@ -379,6 +380,10 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
             value = str(value or "en-US").strip()
             if value not in {"en-US", "zh-CN"}:
                 value = "en-US"
+        elif key == "browser_engine":
+            value = str(value or "camoufox").strip().lower()
+            if value not in {"camoufox", "cloakbrowser"}:
+                value = "camoufox"
         elif key == "email_provider":
             value = str(value or "cloudflare").strip().lower() or "cloudflare"
             if value not in {"cloudflare", "duckmail", "yyds", "mailnest", "outlookemail", "cloudmail"}:
@@ -1464,7 +1469,7 @@ def create_app() -> FastAPI:
             except Exception:
                 pass
         try:
-            result = gr._bs.kill_all_camoufox_processes(log_callback=job_coordinator._append_log)
+            result = gr._bs.kill_all_browser_processes(log_callback=job_coordinator._append_log)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"终止浏览器失败: {exc}") from exc
         return {"ok": True, **result, "job": job_coordinator.status()}

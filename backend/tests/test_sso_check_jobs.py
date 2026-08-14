@@ -231,6 +231,7 @@ class SsoCheckJobCoordinatorTests(unittest.TestCase):
         self.assertEqual([call.args[0] for call in sleep.call_args_list], [2, 4])
         self.assertEqual(store.saved[0][1], "clean")
         self.assertEqual(store.saved[0][2]["bot_flag_source"], 0)
+        self.assertEqual(store.saved[0][2]["mode"], "batch_detailed")
 
 
 if __name__ == "__main__":

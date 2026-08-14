@@ -1,6 +1,6 @@
 # Grok Register
 
-基于 FastAPI、React 和 Camoufox 的 Web 注册管理工具。支持注册任务、账号管理，以及 CPA / Grok2API 授权文件生成。
+基于 FastAPI、React 和 Playwright 浏览器适配层的 Web 注册管理工具。Camoufox 保持默认，同时可切换到 CloakBrowser，支持注册任务、账号管理，以及 CPA / Grok2API 授权文件生成。
 
 [部署文档](DEPLOYMENT.md) · [Web 说明](WEB.md)
 
@@ -19,7 +19,7 @@
 ## 功能
 
 - Web 控制台：任务进度、实时日志、账号管理和系统设置
-- Camoufox 浏览器，支持多 worker 和异常进程清理
+- Camoufox（Firefox，默认）与 CloakBrowser（Chromium）双浏览器后端，共用注册流程、代理和异常进程清理
 - 支持 Cloudflare、DuckMail / Mail.tm、YYDS、MailNest、OutlookEmail、CloudMail
 - 注册完成后生成 CPA / Grok2API JSON
 - Grok Build 导入成功后可通过持久 Webhook 通知 GrokIQ
@@ -50,7 +50,7 @@ docker compose logs -f grok-register
 curl http://127.0.0.1:8787/api/health
 ```
 
-容器内使用 **Xvfb + 有头 Camoufox**，服务器不需要桌面环境。Docker 模式会强制关闭无头模式。
+容器内使用 **Xvfb + 有头浏览器**，服务器不需要桌面环境。默认后端仍是 Camoufox，可在设置页切换 CloakBrowser；Docker 模式会强制关闭无头模式。
 
 如果配置里的代理是 `127.0.0.1:7897`，Compose 会自动映射到宿主机代理。宿主机代理软件需要允许局域网连接（监听 `0.0.0.0` 或 Docker 网桥地址）。
 
@@ -213,6 +213,7 @@ Windows 启动：
 | `register_count` | 注册数量 |
 | `register_workers` | 并发数量，默认 1 |
 | `proxy` | 注册和 OAuth 请求使用的 HTTP(S) 代理；支持 `http://host:port` 和 `http://user:password@host:port`，凭据中的特殊字符需使用 URL 百分号编码 |
+| `browser_engine` | 浏览器后端：`camoufox`（默认）或 `cloakbrowser` |
 | `browser_headless` | 本机无头模式；Docker 中强制关闭 |
 | `cpa_auto_add` | 注册后生成 CPA 授权 |
 | `sso_detailed_risk_check` | 获取 SSO 后详细检查账号页；`botFlagSource=0` 正常，非 `0` 异常，缺失时自动重试 |
@@ -241,7 +242,8 @@ data/
 ├── web_auth.json                 # Web 管理员认证
 ├── accounts/                     # 账号和注册结果
 ├── cpa_auth/                     # CPA JSON
-└── grok2api_auth/                # Grok2API JSON
+├── grok2api_auth/                # Grok2API JSON
+└── cloakbrowser-cache/           # CloakBrowser 首次使用后下载的 Chromium
 
 logs/                             # 运行日志
 outlookemail-data/                # 可选 OutlookEmail 数据
@@ -261,6 +263,9 @@ docker compose up -d --build
 
 # 验证有头 Camoufox
 docker compose run --rm grok-register python /app/docker/camoufox_smoke.py
+
+# 验证有头 CloakBrowser（首次运行会下载并缓存 Chromium）
+docker compose run --rm grok-register python /app/docker/cloakbrowser_smoke.py
 
 # 后端测试
 .venv/bin/python -m unittest discover -s backend/tests -v
@@ -284,6 +289,14 @@ docker compose restart grok-register
 ```bash
 .venv/bin/python -m camoufox fetch
 .venv/bin/python -m camoufox version
+```
+
+### CloakBrowser 首次启动
+
+安装依赖后可预先下载 Chromium；Docker 会把缓存保存在 `data/cloakbrowser-cache/`：
+
+```bash
+.venv/bin/python -m cloakbrowser install
 ```
 
 ### 公网 HTTPS 登录状态异常
@@ -311,7 +324,7 @@ front/                  React 前端
 backend/                Python 后端
   web/                  FastAPI、认证与任务调度
   registration/         注册编排、仓储和结果产物
-  automation/           Camoufox 浏览器运行时
+  automation/           Camoufox / CloakBrowser 浏览器运行时与共用页面适配
   integrations/         代理、连通性和授权交换
   mailbox/              邮箱渠道适配
   shared/               公共路径等基础设施

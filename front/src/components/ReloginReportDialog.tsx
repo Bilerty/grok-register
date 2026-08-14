@@ -16,6 +16,17 @@ function itemLabel(item: ReloginItem) {
   return item.email || `账号 #${item.account_id}`;
 }
 
+export function reloginSsoCheckLabel(item: ReloginItem) {
+  const source = item.bot_flag_source;
+  if (item.sso_check_status === "clean") return "SSO 风控正常（botFlagSource=0）";
+  if (item.sso_check_status === "flagged") {
+    return `SSO 风控异常（botFlagSource=${source ?? "-"}）`;
+  }
+  if (item.sso_check_status === "unknown") return "SSO 风控结论未知";
+  if (item.sso_check_status === "failed") return "SSO 风控检查失败";
+  return "";
+}
+
 /** 复制用纯文本。按后端原始顺序（即用户选择顺序），与弹窗内的排序刻意不同。 */
 export function buildReloginReportText(report: ReloginReportLike) {
   const items = report.items ?? [];
@@ -27,10 +38,19 @@ export function buildReloginReportText(report: ReloginReportLike) {
     `总数 ${report.total_count} / 成功 ${report.success_count} / 失败 ${report.failed_count}`,
   ].filter(Boolean);
   const lines = items.map((item) => {
-    if (item.status === "success") return `[成功] ${itemLabel(item)}`;
+    const riskLabel = reloginSsoCheckLabel(item);
+    if (item.status === "success") {
+      return [
+        `[成功] ${itemLabel(item)}`,
+        riskLabel ? `  ${riskLabel}` : "",
+        item.sso_check_error ? `  检查说明：${item.sso_check_error}` : "",
+      ].filter(Boolean).join("\n");
+    }
     if (item.status === "pending") return `[未执行] ${itemLabel(item)}`;
     return [
       `[失败] ${itemLabel(item)}：${item.error || "未知原因"}`,
+      riskLabel ? `  ${riskLabel}` : "",
+      item.sso_check_error ? `  检查说明：${item.sso_check_error}` : "",
       item.stage ? `  阶段：${item.stage}` : "",
       item.error_type ? `  异常类型：${item.error_type}` : "",
       item.visible_error && item.visible_error !== item.error ? `  页面错误：${item.visible_error}` : "",
@@ -122,6 +142,11 @@ export function ReloginReportDialog({
                     {item.status === "success" ? "成功" : "未执行"}
                   </div>
                 )}
+                {reloginSsoCheckLabel(item) ? (
+                  <div className={`mt-1 text-xs ${item.sso_check_status === "flagged" ? "text-amber-700" : item.sso_check_status === "clean" ? "text-emerald-700" : "text-slate-500"}`}>
+                    {reloginSsoCheckLabel(item)}
+                  </div>
+                ) : null}
               </div>
             </li>
           ))}

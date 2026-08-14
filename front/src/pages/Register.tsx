@@ -416,7 +416,7 @@ export function RegisterPage({ view = "new" }: { view?: "new" | "runtime" }) {
   };
 
   const onKillBrowsers = async () => {
-    if (!window.confirm("终止所有 Camoufox 浏览器进程？正在运行的注册任务也会先请求停止。")) return;
+    if (!window.confirm("终止所有托管浏览器进程？正在运行的注册任务也会先请求停止。")) return;
     setBusyAction("kill");
     try {
       const data = await api.killAllBrowsers();

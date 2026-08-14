@@ -29,7 +29,7 @@ from playwright._impl._playwright import Playwright as _PwImpl
 from playwright._impl._transport import PipeTransport as _PwPipeTransport
 from playwright.sync_api._generated import Playwright as _SyncPlaywright
 
-from backend.automation.page_adapter import CamoufoxBrowser, CamoufoxPage
+from backend.automation.page_adapter import BrowserAdapter, PageAdapter
 from backend.integrations.proxy import HTTP_PROXY_SCHEMES, parse_http_proxy_url
 
 
@@ -85,14 +85,28 @@ class IsolatedCamoufox(_Camoufox):
         return self.browser
 
 
-# 仅允许删除该目录树下的临时 profile，防止误删其它路径
-_PROFILE_ROOT_MARKER = "grok-register-camoufox"
+BROWSER_ENGINE_CAMOUFOX = "camoufox"
+BROWSER_ENGINE_CLOAKBROWSER = "cloakbrowser"
+SUPPORTED_BROWSER_ENGINES = {
+    BROWSER_ENGINE_CAMOUFOX,
+    BROWSER_ENGINE_CLOAKBROWSER,
+}
+
+# 仅允许删除这些目录树下的临时 profile，防止误删其它路径。
+_PROFILE_ROOT_MARKERS = {
+    BROWSER_ENGINE_CAMOUFOX: "grok-register-camoufox",
+    BROWSER_ENGINE_CLOAKBROWSER: "grok-register-cloakbrowser",
+}
+# 保留旧常量，兼容已有测试和外部导入。
+_PROFILE_ROOT_MARKER = _PROFILE_ROOT_MARKERS[BROWSER_ENGINE_CAMOUFOX]
+_CLOAK_PROFILE_ROOT_MARKER = _PROFILE_ROOT_MARKERS[BROWSER_ENGINE_CLOAKBROWSER]
 
 _tls = threading.local()
 _get_proxy: Optional[Callable[[], dict]] = None
 _is_debug: Optional[Callable[[], bool]] = None
 _is_headless: Optional[Callable[[], bool]] = None
 _get_locale: Optional[Callable[[], str]] = None
+_get_engine: Optional[Callable[[], str]] = None
 _extension_path: str = ""
 _start_fail_lock = threading.Lock()
 _start_fail_streak = 0
@@ -100,12 +114,20 @@ _start_fail_threshold = 3
 _browser_launch_blocked = threading.Event()
 
 
-def configure(get_proxies=None, is_debug=None, is_headless=None, get_locale=None, extension_path=""):
-    global _get_proxy, _is_debug, _is_headless, _get_locale, _extension_path
+def configure(
+    get_proxies=None,
+    is_debug=None,
+    is_headless=None,
+    get_locale=None,
+    get_engine=None,
+    extension_path="",
+):
+    global _get_proxy, _is_debug, _is_headless, _get_locale, _get_engine, _extension_path
     _get_proxy = get_proxies
     _is_debug = is_debug
     _is_headless = is_headless
     _get_locale = get_locale
+    _get_engine = get_engine
     _extension_path = extension_path or ""
 
 
@@ -136,6 +158,18 @@ def _proxies() -> dict:
 def _browser_locale() -> str:
     value = str(_get_locale() if _get_locale else "en-US").strip()
     return value if value in {"en-US", "zh-CN"} else "en-US"
+
+
+def normalize_browser_engine(value) -> str:
+    engine = str(value or BROWSER_ENGINE_CAMOUFOX).strip().lower()
+    if engine not in SUPPORTED_BROWSER_ENGINES:
+        return BROWSER_ENGINE_CAMOUFOX
+    return engine
+
+
+def selected_browser_engine() -> str:
+    value = _get_engine() if _get_engine else BROWSER_ENGINE_CAMOUFOX
+    return normalize_browser_engine(value)
 
 
 def _debug() -> bool:
@@ -197,12 +231,31 @@ page = _SessionProxy("page")
 
 
 def _is_managed_profile_dir(path: str) -> bool:
-    """是否为本工具创建的临时 Camoufox 资料目录。"""
+    """是否为本工具创建的临时浏览器资料目录。"""
     if not path:
         return False
     norm = os.path.normpath(path).replace("\\", "/").lower()
-    marker = _PROFILE_ROOT_MARKER.lower()
-    return f"/{marker}/" in f"/{norm}/" or norm.rstrip("/").endswith(f"/{marker}")
+    for marker_value in _PROFILE_ROOT_MARKERS.values():
+        marker = marker_value.lower()
+        if f"/{marker}/" in f"/{norm}/" or norm.rstrip("/").endswith(f"/{marker}"):
+            return True
+    return False
+
+
+def _profile_root(engine: str) -> str:
+    marker = _PROFILE_ROOT_MARKERS[normalize_browser_engine(engine)]
+    return os.path.join(tempfile.gettempdir(), marker)
+
+
+def _create_profile_dir(engine: str) -> str:
+    profile_dir = os.path.join(
+        _profile_root(engine),
+        f"{os.getpid()}-{threading.get_ident()}-{uuid.uuid4().hex[:8]}",
+    )
+    os.makedirs(profile_dir, exist_ok=True)
+    _tls.profile_dir = profile_dir
+    _tls.browser_engine = normalize_browser_engine(engine)
+    return profile_dir
 
 
 def _rmtree_with_retry(path: str, max_retries: int = 3, delay: float = 0.5) -> bool:
@@ -236,6 +289,7 @@ def _cleanup_profile_dir(profile_dir=None) -> None:
             == os.path.normpath(str(path or ""))
         ):
             _tls.profile_dir = None
+            _tls.browser_engine = None
     except Exception:
         pass
     if not path or not _is_managed_profile_dir(str(path)):
@@ -247,35 +301,31 @@ def _cleanup_profile_dir(profile_dir=None) -> None:
 def cleanup_stale_profiles(log_callback=None) -> int:
     """启动时清理上次崩溃 / 强杀残留的临时 profile 目录。
 
-    扫描 TEMP/grok-register-camoufox/ 下的子目录，
-    删除所有未被当前进程占用的旧目录。
+    扫描 Camoufox 与 CloakBrowser 的托管目录，删除所有未被当前进程占用的
+    旧目录。
     返回清理的目录数量。
     """
-    root = os.path.join(tempfile.gettempdir(), _PROFILE_ROOT_MARKER)
-    if not os.path.isdir(root):
-        return 0
-
     current_pid = os.getpid()
     cleaned = 0
-    try:
-        for entry in os.listdir(root):
-            entry_path = os.path.join(root, entry)
-            if not os.path.isdir(entry_path):
-                continue
-            # 目录名格式: {pid}-{thread_id}-{uuid8}
-            # 只跳过当前进程的活跃目录
-            if entry.startswith(f"{current_pid}-"):
-                continue
-            if _rmtree_with_retry(entry_path):
-                cleaned += 1
-    except Exception:
-        pass
-
-    # 如果 root 目录已空，顺便删掉
-    if cleaned > 0:
+    for engine in SUPPORTED_BROWSER_ENGINES:
+        root = _profile_root(engine)
+        if not os.path.isdir(root):
+            continue
         try:
-            remaining = os.listdir(root)
-            if not remaining:
+            for entry in os.listdir(root):
+                entry_path = os.path.join(root, entry)
+                if not os.path.isdir(entry_path):
+                    continue
+                # 目录名格式: {pid}-{thread_id}-{uuid8}
+                # 只跳过当前进程的活跃目录
+                if entry.startswith(f"{current_pid}-"):
+                    continue
+                if _rmtree_with_retry(entry_path):
+                    cleaned += 1
+        except Exception:
+            pass
+        try:
+            if not os.listdir(root):
                 shutil.rmtree(root, ignore_errors=True)
         except Exception:
             pass
@@ -293,6 +343,18 @@ def _is_camoufox_process(executable: str, command_line: str) -> bool:
     if basename in {"camoufox", "camoufox-bin", "camoufox.exe"}:
         return True
     return "/camoufox/" in exe or _PROFILE_ROOT_MARKER.lower() in command
+
+
+def _is_cloakbrowser_process(executable: str, command_line: str) -> bool:
+    """Match only CloakBrowser processes launched with this project's profile."""
+    command = str(command_line or "").replace("\\", "/").lower()
+    return _CLOAK_PROFILE_ROOT_MARKER.lower() in command
+
+
+def _is_managed_browser_process(executable: str, command_line: str) -> bool:
+    return _is_camoufox_process(executable, command_line) or _is_cloakbrowser_process(
+        executable, command_line
+    )
 
 
 def _linux_processes() -> dict[int, tuple[int, str, str]]:
@@ -319,35 +381,45 @@ def _linux_processes() -> dict[int, tuple[int, str, str]]:
     return processes
 
 
-def _cleanup_all_managed_profiles() -> int:
-    root = os.path.join(tempfile.gettempdir(), _PROFILE_ROOT_MARKER)
-    if not os.path.isdir(root):
-        return 0
+def _cleanup_all_managed_profiles(engine: Optional[str] = None) -> int:
+    engines = (
+        [normalize_browser_engine(engine)]
+        if engine is not None
+        else sorted(SUPPORTED_BROWSER_ENGINES)
+    )
     cleaned = 0
-    for entry in list(os.listdir(root)):
-        path = os.path.join(root, entry)
-        if os.path.isdir(path) and _rmtree_with_retry(path):
-            cleaned += 1
-    try:
-        if not os.listdir(root):
-            os.rmdir(root)
-    except OSError:
-        pass
+    for selected in engines:
+        root = _profile_root(selected)
+        if not os.path.isdir(root):
+            continue
+        for entry in list(os.listdir(root)):
+            path = os.path.join(root, entry)
+            if os.path.isdir(path) and _rmtree_with_retry(path):
+                cleaned += 1
+        try:
+            if not os.listdir(root):
+                os.rmdir(root)
+        except OSError:
+            pass
     return cleaned
 
 
-def kill_all_camoufox_processes(log_callback=None) -> dict:
-    """Terminate every Camoufox process tree and remove managed profiles."""
-    block_browser_launches()
+def _kill_browser_processes(
+    matcher: Callable[[str, str], bool],
+    *,
+    profile_engine: Optional[str],
+    label: str,
+    log_callback=None,
+) -> dict:
     if os.name != "posix" or not os.path.isdir("/proc"):
-        raise RuntimeError("当前系统暂不支持批量终止 Camoufox")
+        raise RuntimeError(f"当前系统暂不支持批量终止{label}")
 
     processes = _linux_processes()
     current_pid = os.getpid()
     targets = {
         pid
         for pid, (_, executable, command) in processes.items()
-        if pid != current_pid and _is_camoufox_process(executable, command)
+        if pid != current_pid and matcher(executable, command)
     }
 
     # Include helper/content descendants even if their executable name differs.
@@ -368,21 +440,54 @@ def kill_all_camoufox_processes(log_callback=None) -> dict:
             except ProcessLookupError:
                 pass
             except PermissionError as exc:
-                raise RuntimeError(f"没有权限终止 Camoufox 进程 {pid}") from exc
+                raise RuntimeError(f"没有权限终止{label}进程 {pid}") from exc
         if sig == signal.SIGTERM and targets:
             time.sleep(0.8)
 
-    cleaned_profiles = _cleanup_all_managed_profiles()
+    cleaned_profiles = _cleanup_all_managed_profiles(profile_engine)
     result = {"killed": len(attempted), "profiles_cleaned": cleaned_profiles}
     if log_callback:
         log_callback(
-            f"[!] 已终止 {result['killed']} 个 Camoufox 进程，清理 {cleaned_profiles} 个资料目录"
+            f"[!] 已终止 {result['killed']} 个{label}进程，清理 {cleaned_profiles} 个资料目录"
         )
     return result
 
 
+def kill_all_camoufox_processes(log_callback=None) -> dict:
+    """Terminate every Camoufox process tree and remove Camoufox profiles."""
+    block_browser_launches()
+    return _kill_browser_processes(
+        _is_camoufox_process,
+        profile_engine=BROWSER_ENGINE_CAMOUFOX,
+        label="Camoufox 浏览器",
+        log_callback=log_callback,
+    )
+
+
+def kill_all_cloakbrowser_processes(log_callback=None) -> dict:
+    """Terminate every managed CloakBrowser tree and remove its profiles."""
+    block_browser_launches()
+    return _kill_browser_processes(
+        _is_cloakbrowser_process,
+        profile_engine=BROWSER_ENGINE_CLOAKBROWSER,
+        label="CloakBrowser 浏览器",
+        log_callback=log_callback,
+    )
+
+
+def kill_all_browser_processes(log_callback=None) -> dict:
+    """Terminate both supported browser backends and remove managed profiles."""
+    block_browser_launches()
+    return _kill_browser_processes(
+        _is_managed_browser_process,
+        profile_engine=None,
+        label="浏览器",
+        log_callback=log_callback,
+    )
+
+
 def _build_camoufox_proxy(proxy_str: str) -> dict:
-    """把代理 URL 转换为 Camoufox/Playwright proxy dict。"""
+    """把代理 URL 转换为两个浏览器后端共用的 Playwright proxy dict。"""
     proxy_str = proxy_str.strip()
     if not proxy_str:
         return {}
@@ -487,11 +592,10 @@ def _ensure_default_addons_or_exclude():
     return exclude
 
 
-def create_browser_options(unique_profile=True) -> dict:
+def create_camoufox_options(unique_profile=True) -> dict:
     """构建 Camoufox 启动参数 dict。
 
     返回可直接传给 Camoufox(**opts) 的参数字典。
-    替代原 DrissionPage 的 ChromiumOptions。
 
     浏览器策略：
     - headless：由 Web 设置控制，默认使用有头模式
@@ -537,41 +641,112 @@ def create_browser_options(unique_profile=True) -> dict:
 
     # Profile 隔离
     if unique_profile:
-        profile_dir = os.path.join(
-            tempfile.gettempdir(),
-            _PROFILE_ROOT_MARKER,
-            f"{os.getpid()}-{threading.get_ident()}-{uuid.uuid4().hex[:8]}",
-        )
-        os.makedirs(profile_dir, exist_ok=True)
+        profile_dir = _create_profile_dir(BROWSER_ENGINE_CAMOUFOX)
         opts["persistent_context"] = True
         opts["user_data_dir"] = profile_dir
-        _tls.profile_dir = profile_dir
 
     return opts
 
 
-def start_browser(log_callback=None) -> Tuple[object, object]:
-    """启动 Camoufox 浏览器，返回 (CamoufoxBrowser, CamoufoxPage)。
+def create_cloakbrowser_options(unique_profile=True) -> dict:
+    """构建 CloakBrowser ``launch_persistent_context`` 启动参数。"""
+    opts: dict = {
+        "headless": _headless(),
+        "humanize": True,
+        "geoip": True,
+        # 明确固定页面语言；geoip 仍用于时区与 WebRTC 出口匹配。
+        "locale": _browser_locale(),
+    }
 
-    使用 Camoufox C++ 引擎层指纹伪装：
-    - 从编译层修改 Gecko，JS 完全不可检测
-    - 内置 BrowserForge 指纹生成器
-    - GeoIP 自动匹配时区 / 语言
-    - 人类化鼠标轨迹
+    proxies = _proxies()
+    proxy = str(proxies.get("https") or proxies.get("http") or "").strip()
+    if proxy:
+        opts["proxy"] = _build_camoufox_proxy(proxy)
+
+    # CloakBrowser 使用 Chromium 扩展目录；manifest.json 校验与 Firefox
+    # 解压扩展的最低要求相同。
+    if _extension_path and _is_valid_firefox_addon(_extension_path):
+        opts["extension_paths"] = [_extension_path]
+
+    if unique_profile:
+        opts["user_data_dir"] = _create_profile_dir(BROWSER_ENGINE_CLOAKBROWSER)
+    return opts
+
+
+def create_browser_options(unique_profile=True, engine: Optional[str] = None) -> dict:
+    """按所选后端构建启动参数；默认继续使用 Camoufox。"""
+    selected = normalize_browser_engine(engine or selected_browser_engine())
+    if selected == BROWSER_ENGINE_CLOAKBROWSER:
+        return create_cloakbrowser_options(unique_profile=unique_profile)
+    return create_camoufox_options(unique_profile=unique_profile)
+
+
+class BrowserBackendUnavailable(RuntimeError):
+    pass
+
+
+def _launch_camoufox_context(opts: dict):
+    # IsolatedCamoufox.__enter__() 直接创建全新事件循环，完全绕过
+    # PlaywrightContextManager 的 get_running_loop() 检查。
+    camoufox = IsolatedCamoufox(**opts)
+    return camoufox.__enter__(), camoufox
+
+
+def _launch_cloakbrowser_context(opts: dict):
+    try:
+        from cloakbrowser import launch_persistent_context
+    except ImportError as exc:
+        raise BrowserBackendUnavailable(
+            "CloakBrowser 后端依赖未安装，请重新安装 requirements.txt"
+        ) from exc
+
+    launch_options = dict(opts)
+    user_data_dir = str(launch_options.pop("user_data_dir", "") or "").strip()
+    if not user_data_dir:
+        user_data_dir = _create_profile_dir(BROWSER_ENGINE_CLOAKBROWSER)
+    context = launch_persistent_context(user_data_dir=user_data_dir, **launch_options)
+    return context, None
+
+
+def _close_unwrapped_context(browser_context=None, lifecycle=None) -> None:
+    try:
+        if browser_context is not None:
+            browser_context.close()
+    except BaseException:
+        pass
+    try:
+        if lifecycle is not None:
+            lifecycle.__exit__(None, None, None)
+    except BaseException:
+        pass
+
+
+def start_browser(log_callback=None) -> Tuple[object, object]:
+    """启动当前配置的浏览器后端并返回共用页面适配对象。
+
+    ``browser_engine`` 缺省为 Camoufox；切换到 CloakBrowser 时只替换启动
+    与生命周期实现，上层注册步骤保持不变。
     """
+    engine = selected_browser_engine()
+    engine_label = "CloakBrowser" if engine == BROWSER_ENGINE_CLOAKBROWSER else "Camoufox"
     last_exc = None
     for attempt in range(1, 5):
         if _browser_launch_blocked.is_set():
-            raise RuntimeError("Camoufox 启动已被紧急终止操作阻止")
+            raise RuntimeError("浏览器启动已被紧急终止操作阻止")
         profile_dir = None
+        browser_context = None
+        lifecycle = None
         try:
-            opts = create_browser_options(unique_profile=True)
+            opts = create_browser_options(unique_profile=True, engine=engine)
             profile_dir = getattr(_tls, "profile_dir", None)
 
-            # IsolatedCamoufox.__enter__() 直接创建全新事件循环，
-            # 完全绕过 PlaywrightContextManager 的 get_running_loop() 检查
-            camoufox = IsolatedCamoufox(**opts)
-            browser_context = camoufox.__enter__()
+            if engine == BROWSER_ENGINE_CLOAKBROWSER:
+                browser_context, lifecycle = _launch_cloakbrowser_context(opts)
+            else:
+                browser_context, lifecycle = _launch_camoufox_context(opts)
+
+            if _browser_launch_blocked.is_set():
+                raise RuntimeError("浏览器启动已被紧急终止操作阻止")
 
             # 获取或创建页面
             raw_pages = (
@@ -584,24 +759,28 @@ def start_browser(log_callback=None) -> Tuple[object, object]:
             else:
                 raw_page = browser_context.new_page()
 
-            page_obj = CamoufoxPage(raw_page, browser_context)
-            browser_obj = CamoufoxBrowser(
+            page_obj = PageAdapter(raw_page, browser_context)
+            browser_obj = BrowserAdapter(
                 browser=None,
                 context=browser_context,
-                camoufox_instance=camoufox,
+                camoufox_instance=lifecycle,
+                engine_name=engine,
             )
             browser_obj.user_data_path = profile_dir or ""
 
             set_browser_session(browser_obj, page_obj)
+            browser_context = None
+            lifecycle = None
             _note_start_success()
 
             if log_callback:
+                log_callback(f"[*] 浏览器后端: {engine_label}")
                 log_callback(f"[*] 浏览器模式: {'无头' if opts['headless'] else '有头'}")
                 log_callback(f"[*] 浏览器语言: {opts['locale']}")
                 proxy_options = opts.get("proxy") if isinstance(opts.get("proxy"), dict) else {}
                 proxy_server = str(proxy_options.get("server") or "").strip()
                 log_callback(
-                    f"[*] Camoufox 网络: {'代理 ' + proxy_server if proxy_server else '直连（未配置代理）'}"
+                    f"[*] {engine_label} 网络: {'代理 ' + proxy_server if proxy_server else '直连（未配置代理）'}"
                 )
             if log_callback and profile_dir:
                 log_callback(f"[Debug] 当前浏览器资料目录: {profile_dir}")
@@ -613,8 +792,9 @@ def start_browser(log_callback=None) -> Tuple[object, object]:
             streak = _note_start_failure()
             if log_callback:
                 log_callback(
-                    f"[Debug] 浏览器启动失败(第{attempt}/4次, 连续失败{streak}): {exc}"
+                    f"[Debug] {engine_label} 启动失败(第{attempt}/4次, 连续失败{streak}): {exc}"
                 )
+            _close_unwrapped_context(browser_context, lifecycle)
             profile_dir = profile_dir or getattr(_tls, "profile_dir", None)
             try:
                 cur = active_browser()
@@ -624,8 +804,10 @@ def start_browser(log_callback=None) -> Tuple[object, object]:
                 pass
             set_browser_session(None, None)
             _cleanup_profile_dir(profile_dir)
+            if isinstance(exc, BrowserBackendUnavailable):
+                break
             time.sleep(min(1.5 * attempt, 4))
-    raise Exception(f"浏览器启动失败，已重试4次: {last_exc}")
+    raise Exception(f"{engine_label} 启动失败: {last_exc}")
 
 
 def stop_browser(force=False):
