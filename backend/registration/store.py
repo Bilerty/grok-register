@@ -781,6 +781,11 @@ class RegistrationRepository:
             )
             if diagnostics:
                 extra["relogin_diagnostics"] = dict(diagnostics)
+            elif relogin_status == "success":
+                extra.pop("relogin_diagnostics", None)
+            if relogin_status == "success":
+                extra.pop("exception_traceback", None)
+                extra.pop("exception_type", None)
             values: Dict[str, Any] = {
                 "extra_json": json.dumps(extra, ensure_ascii=False, sort_keys=True),
                 "id": normalized_id,
@@ -789,6 +794,23 @@ class RegistrationRepository:
             if screenshot_path:
                 assignments.append("screenshot_path = :screenshot_path")
                 values["screenshot_path"] = str(screenshot_path)
+            if relogin_status == "success":
+                values.update(
+                    {
+                        "status": "success",
+                        "success": 1,
+                        "failure_type": "",
+                        "failure_reason": "",
+                    }
+                )
+                assignments.extend(
+                    [
+                        "status = :status",
+                        "success = :success",
+                        "failure_type = :failure_type",
+                        "failure_reason = :failure_reason",
+                    ]
+                )
             if relogin_status in {"success", "partial"} and account_file:
                 auth_info = detail.get("auth_info", "")
                 if isinstance(auth_info, (list, tuple, set)):

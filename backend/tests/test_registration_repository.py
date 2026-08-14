@@ -293,6 +293,91 @@ class RegistrationRepositoryMigrationTests(unittest.TestCase):
                 [safe],
             )
 
+    def test_successful_relogin_marks_registration_success_and_clears_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RegistrationRepository(Path(tmp) / "results.sqlite3")
+            account_id = store.add_result(
+                {
+                    "email": "failed@example.com",
+                    "password": "secret",
+                    "status": "failure",
+                    "success": False,
+                    "failure_type": "login_error",
+                    "failure_reason": "Turnstile 未通过",
+                    "screenshot_path": "/tmp/old-failure.png",
+                    "extra_json": json.dumps(
+                        {
+                            "exception_type": "RuntimeError: fixture",
+                            "exception_traceback": "Traceback fixture",
+                            "relogin_diagnostics": {"stage": "填写邮箱和密码"},
+                        }
+                    ),
+                }
+            )
+
+            self.assertTrue(
+                store.update_relogin_result(
+                    account_id,
+                    account_file="/tmp/failed@example.com.txt",
+                    cpa_detail={
+                        "enabled": True,
+                        "status": "success",
+                        "auth_info": "CPA 本地: /tmp/cpa.json",
+                        "auth_path": "/tmp/cpa.json",
+                        "cpa_auth_path": "/tmp/cpa.json",
+                        "grok2api_auth_path": "/tmp/g2a.json",
+                        "grok2api_remote_status": "success",
+                        "grok2api_remote_imported_at": "2026-08-14 00:00:00",
+                    },
+                    status="success",
+                    error="",
+                )
+            )
+
+            refreshed = store.get_results_by_ids([account_id])[0]
+            extra = json.loads(refreshed["extra_json"])
+            self.assertEqual(refreshed["status"], "success")
+            self.assertEqual(refreshed["success"], 1)
+            self.assertEqual(refreshed["failure_type"], "")
+            self.assertEqual(refreshed["failure_reason"], "")
+            self.assertEqual(refreshed["screenshot_path"], "")
+            self.assertEqual(refreshed["grok2api_auth_path"], "/tmp/g2a.json")
+            self.assertEqual(refreshed["grok2api_remote_status"], "success")
+            self.assertEqual(extra["relogin_status"], "success")
+            self.assertNotIn("exception_traceback", extra)
+            self.assertNotIn("exception_type", extra)
+            self.assertNotIn("relogin_diagnostics", extra)
+
+    def test_failed_relogin_does_not_rewrite_registration_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RegistrationRepository(Path(tmp) / "results.sqlite3")
+            account_id = store.add_result(
+                {
+                    "email": "still-failed@example.com",
+                    "status": "failure",
+                    "success": False,
+                    "failure_type": "login_error",
+                    "failure_reason": "原始注册失败",
+                }
+            )
+
+            self.assertTrue(
+                store.update_relogin_result(
+                    account_id,
+                    status="failed",
+                    error="登录超时",
+                )
+            )
+
+            refreshed = store.get_results_by_ids([account_id])[0]
+            extra = json.loads(refreshed["extra_json"])
+            self.assertEqual(refreshed["status"], "failure")
+            self.assertEqual(refreshed["success"], 0)
+            self.assertEqual(refreshed["failure_type"], "login_error")
+            self.assertEqual(refreshed["failure_reason"], "原始注册失败")
+            self.assertEqual(extra["relogin_status"], "failed")
+            self.assertEqual(extra["relogin_error"], "登录超时")
+
 
 if __name__ == "__main__":
     unittest.main()

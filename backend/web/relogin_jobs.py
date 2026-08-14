@@ -16,6 +16,33 @@ from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import quote
 
 
+def enqueue_relogin_grokiq_notification(
+    store: Any,
+    account_id: int,
+    cpa_detail: Dict[str, Any],
+    config: Any,
+    *,
+    log_callback: Any = None,
+) -> Dict[str, Any] | None:
+    """重登导入 grok_build 成功后，走与注册相同的 GrokIQ Webhook 入队。"""
+    from backend.integrations import grokiq
+
+    if not grokiq.grok_build_import_succeeded(cpa_detail.get("grok2api_remote_result")):
+        return None
+    records = store.get_results_by_ids([account_id])
+    if not records:
+        return None
+    try:
+        event = grokiq.enqueue_imported_account(store, records[0], config)
+    except Exception as exc:
+        if log_callback:
+            log_callback(f"[GrokIQ] 账号已导入 Grok2API，但联动通知入队失败: {exc}")
+        return None
+    if event and log_callback:
+        log_callback(f"[GrokIQ] 已加入联动通知队列: {event.get('event_id')}")
+    return event
+
+
 class ReloginJobCoordinator:
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -273,6 +300,13 @@ class ReloginJobCoordinator:
                 cpa_detail=cpa_detail,
                 status="success",
                 error="",
+            )
+            enqueue_relogin_grokiq_notification(
+                store,
+                account_id,
+                cpa_detail,
+                gr.config,
+                log_callback=log,
             )
             return ""
         except Exception as exc:

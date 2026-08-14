@@ -4,7 +4,10 @@ import unittest
 from unittest import mock
 
 from backend.registration import engine
-from backend.web.relogin_jobs import ReloginJobCoordinator
+from backend.web.relogin_jobs import (
+    ReloginJobCoordinator,
+    enqueue_relogin_grokiq_notification,
+)
 
 
 class _Store:
@@ -209,6 +212,101 @@ class ReloginJobCoordinatorTests(unittest.TestCase):
                 self._wait_idle(coordinator)
 
         self.assertEqual(coordinator.status()["success_count"], 2)
+
+    def test_successful_relogin_enqueues_grokiq_webhook_after_grok_build_import(self):
+        store = mock.Mock()
+        store.get_results_by_ids.return_value = [
+            {"id": 7, "email": "ok@example.com", "bot_risk": False, "bfs": "0"}
+        ]
+        event = {"event_id": "registration:7:grok2api-imported"}
+        config = {"grokiq_webhook_enabled": True}
+        logs = []
+
+        with mock.patch(
+            "backend.integrations.grokiq.enqueue_imported_account",
+            return_value=event,
+        ) as enqueue:
+            queued = enqueue_relogin_grokiq_notification(
+                store,
+                7,
+                {
+                    "grok2api_remote_result": {
+                        "formats": {"grok_build": {"created": 1}},
+                        "errors": {},
+                    }
+                },
+                config,
+                log_callback=logs.append,
+            )
+
+        self.assertEqual(queued, event)
+        enqueue.assert_called_once()
+        self.assertEqual(enqueue.call_args.args[1]["email"], "ok@example.com")
+        self.assertTrue(any("已加入联动通知队列" in item for item in logs))
+
+    def test_relogin_skips_grokiq_webhook_when_grok_build_was_not_imported(self):
+        store = mock.Mock()
+        with mock.patch(
+            "backend.integrations.grokiq.enqueue_imported_account"
+        ) as enqueue:
+            queued = enqueue_relogin_grokiq_notification(
+                store,
+                7,
+                {"grok2api_remote_result": {"formats": {}, "errors": {}}},
+                {"grokiq_webhook_enabled": True},
+            )
+
+        self.assertIsNone(queued)
+        store.get_results_by_ids.assert_not_called()
+        enqueue.assert_not_called()
+
+    def test_run_record_enqueues_webhook_after_successful_rebuild(self):
+        import tempfile
+        from pathlib import Path
+
+        store = mock.Mock()
+        store.update_relogin_result.return_value = True
+        coordinator = ReloginJobCoordinator()
+        record = {"id": 7, "email": "ok@example.com", "password": "secret"}
+        cpa_detail = {
+            "status": "success",
+            "grok2api_remote_result": {"formats": {"grok_build": {"created": 1}}},
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            account_file = str(Path(tmp) / "ok@example.com.txt")
+
+            def capture_detail(sso, email="", log_callback=None, result_out=None):
+                result_out.update(cpa_detail)
+                return True
+
+            with (
+                mock.patch.object(engine, "load_config"),
+                mock.patch.object(engine, "_wire_runtime_modules"),
+                mock.patch.object(engine._bs, "allow_browser_launches"),
+                mock.patch.object(engine, "account_file_for_email", return_value=account_file),
+                mock.patch.object(engine, "add_sso_to_cpa", side_effect=capture_detail),
+                mock.patch(
+                    "backend.registration.login_flow.login_with_password",
+                    return_value="sso",
+                ),
+                mock.patch("backend.automation.session.stop_browser"),
+                mock.patch(
+                    "backend.web.relogin_jobs.enqueue_relogin_grokiq_notification",
+                    return_value={"event_id": "registration:7:grok2api-imported"},
+                ) as enqueue,
+            ):
+                error = coordinator._run_record(record, store)
+
+        self.assertEqual(error, "")
+        store.update_relogin_result.assert_called_once()
+        self.assertEqual(store.update_relogin_result.call_args.kwargs["status"], "success")
+        enqueue.assert_called_once()
+        self.assertEqual(enqueue.call_args.args[1], 7)
+        self.assertEqual(
+            enqueue.call_args.args[2]["grok2api_remote_result"]["formats"]["grok_build"],
+            {"created": 1},
+        )
 
 
 if __name__ == "__main__":
