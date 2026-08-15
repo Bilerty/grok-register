@@ -13,13 +13,15 @@ class Grok2APIImportError(RuntimeError):
     """远程 Grok2API 登录或导入失败。"""
 
 
-def plan_same_proxy_bindings(nodes: list, exit_ip: str) -> dict:
-    """为三渠道同一代理做绑定规划。
+def plan_same_proxy_bindings(nodes: list, proxy_identity: str = "") -> dict:
+    """为三渠道同一代理做绑定规划（按 proxyIdentity 比对）。
 
-    ``nodes`` 为 Grok2API 出口节点列表（含 scope/proxyConfigured/exitIp/
-    ipv4Probe/ipv6Probe/id 字段），``exit_ip`` 为注册代理的出口 IP。
+    ``nodes`` 为 Grok2API 出口节点列表（含 scope/proxyConfigured/proxyIdentity/id
+    字段），``proxy_identity`` 为注册代理模板的身份串（如 ``platformA.{account}``，
+    与 Grok2API 侧规则一致：用户名按最后一个 "." 切分后 account 段规范为
+    {account}）。
 
-    返回 ``{scope: node_id|None}``：node_id 表示可直接绑定已有节点；
+    返回 ``{scope: node_id|None}``：node_id 表示可直接绑定已有同池节点；
     None 表示需要新建节点。scope 固定覆盖 grok_build / grok_web /
     grok_console（console 可与 web 复用，由调用方决定）。
     """
@@ -28,8 +30,7 @@ def plan_same_proxy_bindings(nodes: list, exit_ip: str) -> dict:
         "grok_web": None,
         "grok_console": None,
     }
-    if not exit_ip:
-        return plan
+    identity = str(proxy_identity or "").strip()
     for node in nodes:
         if not isinstance(node, dict):
             continue
@@ -38,15 +39,9 @@ def plan_same_proxy_bindings(nodes: list, exit_ip: str) -> dict:
             continue
         if not node.get("proxyConfigured"):
             continue
-        node_ip = str(node.get("exitIp") or "") or ""
-        if not node_ip:
-            for family in ("ipv4Probe", "ipv6Probe"):
-                probe = node.get(family)
-                if isinstance(probe, dict):
-                    node_ip = str(probe.get("exitIp") or "")
-                    if node_ip:
-                        break
-        if node_ip == exit_ip:
+        if not identity:
+            continue
+        if str(node.get("proxyIdentity") or "") == identity:
             plan[scope] = node.get("id")
     return plan
 

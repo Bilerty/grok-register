@@ -194,9 +194,27 @@ class ProxyPool:
         return not self.urls
 
     def resolve(self, scope_key: str = "", email: str = "") -> str:
-        """返回具体代理 URL（原始形式，未并入 proxy_username/password）。"""
+        """返回本任务使用的代理 URL（含 {account}/{email} 展开，未并入原始凭据）。"""
         with self._lock:
             return self._resolve_locked(scope_key, email)
+
+    def resolve_template(self, scope_key: str = "", email: str = "") -> str:
+        """返回本任务对应的模板（池条目原文），作为状态记录/上报的键。"""
+        with self._lock:
+            if self.mode == MODE_POOL and self.sticky_scope != STICKY_SCOPE_NONE and scope_key:
+                return self._leases.get(scope_key, "") or ""
+            if self.mode == MODE_STICKY_TEMPLATE:
+                return self.urls[0] if self.urls else ""
+            return self.urls[0] if self.urls else ""
+
+    @staticmethod
+    def _expand_template(url: str, scope_key: str, email: str) -> str:
+        if PLACEHOLDER_ACCOUNT in url:
+            return url.replace(PLACEHOLDER_ACCOUNT, scope_key or "")
+        local = "".join(
+            char for char in str(email or "").split("@", 1)[0] if char.isalnum()
+        ).lower()
+        return url.replace(PLACEHOLDER_EMAIL, local)
 
     def render(self, url: str) -> str:
         """把原始 URL 渲染为实际使用的 URL（并入原始凭据）。"""
@@ -239,24 +257,21 @@ class ProxyPool:
         if not self.urls:
             return ""
         if self.mode == MODE_STICKY_TEMPLATE:
-            template = self.urls[0]
-            if PLACEHOLDER_ACCOUNT in template:
-                return template.replace(PLACEHOLDER_ACCOUNT, scope_key or "")
-            local = "".join(
-                char for char in str(email or "").split("@", 1)[0] if char.isalnum()
-            ).lower()
-            return template.replace(PLACEHOLDER_EMAIL, local)
+            return self._expand_template(self.urls[0], scope_key, email)
         if self.mode == MODE_POOL:
             if self.sticky_scope != STICKY_SCOPE_NONE and scope_key:
                 if scope_key in self._leases:
-                    return self._leases[scope_key]
-                picked = self._pick_locked()
-                self._leases[scope_key] = picked
-                return picked
-            return self._pick_locked()
+                    template = self._leases[scope_key]
+                    return self._expand_template(template, scope_key, email)
+                template, use_url = self._pick_locked(scope_key, email)
+                self._leases[scope_key] = template
+                return use_url
+            _template, use_url = self._pick_locked(scope_key, email)
+            return use_url
         return self.urls[0]
 
-    def _pick_locked(self) -> str:
+    def _pick_locked(self, scope_key: str, email: str) -> tuple[str, str]:
+        """选择并探测节点；返回 (模板原文, 展开后的可用 URL)。"""
         now = time.time()
         available = self._healthy_urls_locked(now)
         if not available:
@@ -277,10 +292,11 @@ class ProxyPool:
 
         last_error = ""
         for offset in range(len(order)):
-            url = order[(start + offset) % len(order)]
+            template = order[(start + offset) % len(order)]
+            use_url = self._expand_template(template, scope_key, email)
             if self.probe is not None:
-                result = self._probe_url(url)
-                state = self._nodes.get(url) or NodeState()
+                result = self._probe_url(use_url)
+                state = self._nodes.get(template) or NodeState()
                 state.probe_at = now
                 if result.get("ok"):
                     state.status = STATUS_HEALTHY
@@ -293,19 +309,19 @@ class ProxyPool:
                     state.status = STATUS_UNREACHABLE
                     state.last_error = str(result.get("error") or "")[:200]
                     last_error = state.last_error
-                    self._nodes[url] = state
+                    self._nodes[template] = state
                     self._dirty = True
                     continue
-                self._nodes[url] = state
-            self._usage[url] = self._usage.get(url, 0) + 1
-            state = self._nodes.get(url)
+                self._nodes[template] = state
+            self._usage[template] = self._usage.get(template, 0) + 1
+            state = self._nodes.get(template)
             if state is None:
                 state = NodeState()
-                self._nodes[url] = state
+                self._nodes[template] = state
             state.last_used_at = now
             self._dirty = True
             self._persist_state()
-            return url
+            return template, use_url
 
         raise ProxyPoolExhausted(f"代理池节点探测全部失败: {last_error}")
 
@@ -348,7 +364,7 @@ class ProxyPool:
         results: dict[str, dict] = {}
 
         def worker(url: str):
-            results[url] = self._probe_url(url)
+            results[url] = self._probe_url(self._expand_template(url, "probe", ""))
 
         with ThreadPoolExecutor(max_workers=min(max_workers, len(urls))) as executor:
             list(executor.map(worker, urls))
@@ -647,9 +663,10 @@ def bind_task(scope_key: str = "", email: str = "") -> str:
     池模式无健康节点、或候选节点探测全部失败时抛出 ProxyPoolExhausted。
     """
     pool = _current_pool()
-    raw = pool.resolve(scope_key, email)
-    rendered = pool.render(raw)
-    _tls.raw_url = raw
+    use_url = pool.resolve(scope_key, email)
+    template = pool.resolve_template(scope_key, email) or use_url
+    rendered = pool.render(use_url)
+    _tls.raw_url = template
     _tls.rendered_url = rendered
     _tls.scope_key = scope_key
     return rendered

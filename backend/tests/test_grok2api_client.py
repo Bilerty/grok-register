@@ -146,43 +146,40 @@ class Grok2APIClientTests(unittest.TestCase):
 
 
 class SameProxyPlanTests(unittest.TestCase):
-    """三渠道同代理绑定规划：纯函数测试。"""
+    """三渠道同池绑定规划：按 proxyIdentity 比对（纯函数测试）。"""
 
-    def _node(self, scope, node_id, configured=True, exit_ip=""):
+    def _node(self, scope, node_id, configured=True, identity=""):
         return {
             "id": str(node_id), "scope": scope, "proxyConfigured": configured,
-            "exitIp": exit_ip, "ipv4Probe": None, "ipv6Probe": None,
+            "proxyIdentity": identity,
         }
 
-    def test_matches_nodes_by_exit_ip(self):
+    def test_matches_nodes_by_proxy_identity(self):
         nodes = [
-            self._node("grok_build", 1, exit_ip="1.2.3.4"),
-            self._node("grok_web", 2, exit_ip="9.9.9.9"),
-            self._node("grok_console", 3, exit_ip="1.2.3.4"),
+            self._node("grok_build", 1, identity="platformA.{account}"),
+            self._node("grok_web", 2, identity="platformB.{account}"),
+            self._node("grok_console", 3, identity="platformA.{account}"),
         ]
-        plan = grok2api_client.plan_same_proxy_bindings(nodes, "1.2.3.4")
+        plan = grok2api_client.plan_same_proxy_bindings(nodes, "platformA.{account}")
         self.assertEqual(plan["grok_build"], "1")
         self.assertEqual(plan["grok_web"], None)
         self.assertEqual(plan["grok_console"], "3")
 
     def test_ignores_nodes_without_configured_proxy(self):
-        nodes = [
-            self._node("grok_build", 1, configured=False, exit_ip="1.2.3.4"),
-        ]
-        plan = grok2api_client.plan_same_proxy_bindings(nodes, "1.2.3.4")
+        nodes = [self._node("grok_build", 1, configured=False, identity="platformA.{account}")]
+        plan = grok2api_client.plan_same_proxy_bindings(nodes, "platformA.{account}")
         self.assertIsNone(plan["grok_build"])
 
-    def test_empty_exit_ip_means_create_all(self):
-        nodes = [self._node("grok_build", 1, exit_ip="1.2.3.4")]
+    def test_empty_identity_means_create_all(self):
+        nodes = [self._node("grok_build", 1, identity="platformA.{account}")]
         plan = grok2api_client.plan_same_proxy_bindings(nodes, "")
         self.assertIsNone(plan["grok_build"])
         self.assertIsNone(plan["grok_web"])
 
-    def test_uses_family_probe_exit_ip_as_fallback(self):
-        node = self._node("grok_web", 2)
-        node["ipv4Probe"] = {"exitIp": "5.6.7.8"}
-        plan = grok2api_client.plan_same_proxy_bindings([node], "5.6.7.8")
-        self.assertEqual(plan["grok_web"], "2")
+    def test_identity_mismatch_means_create(self):
+        nodes = [self._node("grok_web", 2, identity="platformB.{account}")]
+        plan = grok2api_client.plan_same_proxy_bindings(nodes, "platformA.{account}")
+        self.assertIsNone(plan["grok_web"])
 
 
 class AdminApiTests(unittest.TestCase):

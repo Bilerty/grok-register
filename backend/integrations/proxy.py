@@ -160,6 +160,32 @@ def build_proxy_url_with_credentials(proxy_url: str, username: str = "", passwor
     return resolved if has_scheme else resolved.split("://", 1)[1]
 
 
+def proxy_identity_from_url(proxy_url: str) -> str:
+    """从代理 URL 提取可比较身份串（与 Grok2API 端规则一致）。
+
+    取用户名，按最后一个 "." 切分；platform 部分原样保留，account 部分
+    规范为字面量 {account}。例：
+
+    - platformA.{account}   -> platformA.{account}
+    - resin.gw.pool.acc-01  -> resin.gw.pool.{account}
+    - plainuser             -> plainuser
+    """
+    value = str(proxy_url or "").strip()
+    if not value:
+        return ""
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return ""
+    username = parsed.username or ""
+    if not username:
+        return ""
+    idx = username.rfind(".")
+    if idx <= 0 or idx == len(username) - 1:
+        return username
+    return username[:idx] + ".{account}"
+
+
 def resolve_proxy_url(proxy_url: str) -> str:
     """Replace a local proxy host with the Docker host alias when configured."""
     value = str(proxy_url or "").strip()

@@ -1,6 +1,7 @@
 import unittest
 from unittest import mock
 
+from backend.integrations import proxy
 from backend.integrations.proxy import (
     parse_http_proxy_url,
     redact_proxy_text,
@@ -98,6 +99,32 @@ class HttpProxyParsingTests(unittest.TestCase):
             "failed via http://user:raw/secret@proxy.example.com:8080"
         )
         self.assertNotIn("raw/secret", malformed)
+
+
+class ProxyIdentityTests(unittest.TestCase):
+
+    def test_placeholder_identity_unchanged(self):
+        url = "https://platformA.{account}:tok@host:443"
+        self.assertEqual(proxy.proxy_identity_from_url(url), "platformA.{account}")
+
+    def test_real_account_normalized(self):
+        url = "https://resin.gw.pool.acc-0007:pw@host:2260"
+        self.assertEqual(proxy.proxy_identity_from_url(url), "resin.gw.pool.{account}")
+
+    def test_no_dot_username_kept(self):
+        self.assertEqual(proxy.proxy_identity_from_url("http://plainuser:pw@h:80"), "plainuser")
+
+    def test_empty_and_invalid(self):
+        self.assertEqual(proxy.proxy_identity_from_url(""), "")
+        self.assertEqual(proxy.proxy_identity_from_url("http://host:80"), "")
+
+    def test_email_placeholder_normalized_to_account(self):
+        self.assertEqual(
+            proxy.proxy_identity_from_url("http://pool.{email}:pw@h:80"),
+            "pool.{account}",
+        )
+
+
 
 
 if __name__ == "__main__":

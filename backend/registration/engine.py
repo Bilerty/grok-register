@@ -44,7 +44,7 @@ from backend.automation import session as _bs
 from backend.registration import signup_flow as _rf
 from backend.integrations import network_checks as _conn
 from backend.registration.store import RegistrationRepository
-from backend.integrations.proxy import redact_proxy_text, redact_proxy_url, resolve_proxy_url
+from backend.integrations.proxy import redact_proxy_text, redact_proxy_url, proxy_identity_from_url, resolve_proxy_url
 from backend.integrations import proxy_pool as _pp
 from backend.shared.paths import DATA_ROOT, PROJECT_ROOT
 from backend.automation.session import (
@@ -2868,27 +2868,27 @@ def registration_log(message):
 
 
 def _bind_g2a_three_channel_same_proxy(client, email, log_callback) -> None:
-    """Grok2API 三渠道同代理：build/web/console 账号绑定注册时使用的出口。
+    """Grok2API 三渠道同代理：build/web/console 账号绑定注册时使用的出口池。
 
-    优先在目标平台已有节点中按出口 IP 匹配（代理 URL 不回显，无法直接比对），
-    找不到则按渠道新建节点并写入注册代理地址；console 账号复用 web 节点。
+    以注册代理模板的身份串（<platform>.{account}）与目标平台节点的
+    proxyIdentity 比对：找到同池节点直接绑定；找不到则按渠道新建节点并
+    写入注册代理模板；console 账号复用 web 节点。
     """
-    exit_ip = _pp.current_node_exit_ip()
-    if not exit_ip:
-        probe = _probe_proxy_node(_pp.current_proxy_url())
-        exit_ip = str(probe.get("egress_ip") or "")
-    proxy_url = _pp.current_proxy_url()
+    template = _pp.current_raw_url()
+    proxy_url = _pp.get_pool().render(template)
+    identity = proxy_identity_from_url(template)
+    log_callback(f"[G2A同代理] 注册代理身份: {identity or '(无)'}")
 
     nodes = client.list_egress_nodes()
-    plan = _grok2api.plan_same_proxy_bindings(nodes, exit_ip)
+    plan = _grok2api.plan_same_proxy_bindings(nodes, identity)
 
     node_by_scope: dict[str, str] = {}
     for scope in ("grok_build", "grok_web"):
         node_id = plan.get(scope)
         if node_id:
-            log_callback(f"[G2A同代理] {scope} 复用已有节点 #{node_id} (出口 {exit_ip})")
+            log_callback(f"[G2A同代理] {scope} 复用同池节点 #{node_id} (身份 {identity})")
         else:
-            name = f"reg-{scope}-{exit_ip or 'bind'}"
+            name = f"reg-{scope}-{identity or 'exit'}"
             created_id = ""
             try:
                 created = client.create_egress_node(
@@ -2905,9 +2905,9 @@ def _bind_g2a_three_channel_same_proxy(client, email, log_callback) -> None:
                         created_id = str(node.get("id") or "")
                         break
             if not created_id:
-                raise RuntimeError(f"{scope} 渠道同代理节点创建/匹配失败")
+                raise RuntimeError(f"{scope} 渠道同池节点创建/匹配失败")
             node_id = created_id
-            log_callback(f"[G2A同代理] {scope} 已创建节点 #{node_id} 并写入注册代理")
+            log_callback(f"[G2A同代理] {scope} 已创建节点 #{node_id} 并写入注册代理模板")
         node_by_scope[scope] = node_id
 
     for provider, node_scope in (
@@ -2927,7 +2927,7 @@ def _bind_g2a_three_channel_same_proxy(client, email, log_callback) -> None:
             continue
         client.bind_accounts_to_node(node_by_scope[node_scope], provider, ids, mode="manual")
         log_callback(
-            f"[G2A同代理] {provider} 账号 {len(ids)} 个已绑定节点 #{node_by_scope[node_scope]} (出口 {exit_ip})"
+            f"[G2A同代理] {provider} 账号 {len(ids)} 个已绑定节点 #{node_by_scope[node_scope]} (身份 {identity})"
         )
 
 

@@ -259,5 +259,40 @@ class PoolManagementTests(unittest.TestCase):
         self.assertFalse(pool.remove_url("p1"))
 
 
+class TemplatePoolTests(unittest.TestCase):
+    """池条目含 {account}/{email} 占位符：展开与状态键按模板。"""
+
+    def test_pool_template_expands_per_scope(self):
+        pool = pp.ProxyPool(pp.MODE_POOL, [
+            "http://poolA.{account}:tok@127.0.0.1:2260",
+        ])
+        self.assertEqual(
+            pool.resolve(scope_key="reg-7"),
+            "http://poolA.reg-7:tok@127.0.0.1:2260",
+        )
+        self.assertEqual(
+            pool.resolve_template(scope_key="reg-7"),
+            "http://poolA.{account}:tok@127.0.0.1:2260",
+        )
+
+    def test_pool_email_placeholder_uses_email(self):
+        pool = pp.ProxyPool(pp.MODE_POOL, ["http://pool.{email}:tok@h:2260"])
+        self.assertEqual(
+            pool.resolve(email="User.Name@x.com"),
+            "http://pool.username:tok@h:2260",
+        )
+
+    def test_pool_template_state_keyed_by_template(self):
+        pool = pp.ProxyPool(pp.MODE_POOL, [
+            "http://poolA.{account}:tok@127.0.0.1:2260",
+            "http://poolB.{account}:tok@127.0.0.1:2260",
+        ])
+        pool.report_failure("http://poolA.{account}:tok@127.0.0.1:2260", reason="risk")
+        picks = [pool.resolve(scope_key=f"t{i}") for i in range(4)]
+        self.assertTrue(all("poolB." in pick for pick in picks))
+
+
+
+
 if __name__ == "__main__":
     unittest.main()
