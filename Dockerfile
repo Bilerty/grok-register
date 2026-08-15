@@ -32,6 +32,7 @@ FROM ubuntu:24.04 AS runtime
 ARG DEBIAN_FRONTEND=noninteractive
 ARG APP_UID=10001
 ARG APP_GID=10001
+ARG GROK_REGISTER_VERSION=""
 
 ENV PATH=/opt/venv/bin:$PATH \
     PYTHONUNBUFFERED=1 \
@@ -68,13 +69,17 @@ WORKDIR /app
 COPY --chown=app:app --from=python-builder /opt/venv /opt/venv
 COPY --chown=app:app --from=python-builder /opt/camoufox-cache /opt/camoufox-cache
 COPY --chown=app:app backend/ ./backend/
-COPY --chown=app:app config.example.json requirements.txt ./
+COPY --chown=app:app config.example.json requirements.txt VERSION ./
 COPY --chown=app:app --from=frontend-builder /build/front/dist ./front/dist/
 COPY --chown=app:app --chmod=755 docker/entrypoint.sh ./docker/entrypoint.sh
 COPY --chown=app:app docker/camoufox_smoke.py ./docker/camoufox_smoke.py
 COPY --chown=app:app docker/cloakbrowser_smoke.py ./docker/cloakbrowser_smoke.py
 
-RUN install -d -o app -g app /app/data /app/logs
+RUN if [ -n "$GROK_REGISTER_VERSION" ]; then \
+      printf '%s\n' "$GROK_REGISTER_VERSION" > /app/VERSION; \
+    fi \
+    && chown app:app /app/VERSION \
+    && install -d -o app -g app /app/data /app/logs
 
 VOLUME ["/app/data", "/app/logs"]
 EXPOSE 8787

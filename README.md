@@ -274,6 +274,27 @@ docker compose run --rm grok-register python /app/docker/cloakbrowser_smoke.py
 cd front && npm run build
 ```
 
+## 新版本检测
+
+服务启动后会读取根目录 `VERSION`，立即查询一次 GitHub Releases，之后每
+1 小时复查。发现高于当前版本的正式 Release 时，管理控制台会自动弹出更新提示，
+展示版本号、更新说明和 Release 链接；关闭后同一版本不再重复弹出，更高版本
+发布后会重新提示。
+
+无需发布测试版本也可以预览弹窗：登录管理控制台后访问
+`/overview?preview-update=1`。预览关闭状态不会写入正式版本的忽略记录，刷新页面
+可以再次查看。
+
+Docker 镜像更新仍使用：
+
+```bash
+docker compose pull
+docker compose up -d --force-recreate
+```
+
+推送 `vX.Y.Z` 标签后，GitHub Actions 会构建对应多架构镜像并自动创建 GitHub
+Release；标签版本同时注入镜像内的 `VERSION`。
+
 ## 常见问题
 
 ### Docker 修改配置后未生效

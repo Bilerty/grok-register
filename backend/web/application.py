@@ -28,9 +28,11 @@ from .account_exports import build_account_auth_archive, build_sso_archive, read
 from .jobs import job_coordinator
 from .relogin_jobs import relogin_coordinator
 from .sso_check_jobs import sso_check_coordinator
+from .update_check import ReleaseUpdateService
 from backend.integrations.proxy import validate_http_proxy_url
 from backend.integrations import grokiq
 from backend.shared.paths import DATA_ROOT, PROJECT_ROOT, STATIC_ROOT
+from backend.shared.version import current_version
 
 APP_DIR = PROJECT_ROOT
 DATA_DIR = DATA_ROOT
@@ -746,14 +748,17 @@ def _relogin_screenshot_file(account_id: int, filename: str) -> tuple[Path, str]
 
 
 def create_app() -> FastAPI:
+    app_version = current_version()
+    update_service = ReleaseUpdateService(app_version)
     app = FastAPI(
         title="Grok Register Web",
         description="Lightweight console for register / list / manage accounts",
-        version="1.0.0",
+        version=app_version,
         docs_url="/api/docs",
         redoc_url="/api/redoc",
         openapi_url="/api/openapi.json",
     )
+    app.state.update_service = update_service
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -797,14 +802,24 @@ def create_app() -> FastAPI:
             )
         except Exception as exc:
             print(f"[web] 初始化 SQLite 失败: {exc}", flush=True)
+        update_service.start()
 
     @app.on_event("shutdown")
     def _shutdown() -> None:
+        update_service.stop()
         grokiq.grokiq_notifier.stop()
 
     @app.get("/api/health")
     def api_health() -> Dict[str, Any]:
-        return {"ok": True, "service": "grok-register-web", "version": "1.0.0"}
+        return {"ok": True, "service": "grok-register-web", "version": app_version}
+
+    @app.get("/api/system/version")
+    def api_system_version() -> Dict[str, Any]:
+        return {"ok": True, "version": update_service.snapshot()}
+
+    @app.post("/api/system/update/check")
+    def api_system_update_check() -> Dict[str, Any]:
+        return {"ok": True, "version": update_service.check()}
 
     @app.get("/api/auth/me")
     def api_auth_me(request: Request) -> Dict[str, Any]:

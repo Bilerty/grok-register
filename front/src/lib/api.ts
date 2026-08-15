@@ -127,6 +127,19 @@ export type AuthState = {
   username: string;
 };
 
+export type UpdateStatus = "unchecked" | "up_to_date" | "update_available" | "check_failed";
+
+export type VersionInfo = {
+  currentVersion: string;
+  latestVersion: string;
+  updateAvailable: boolean;
+  status: UpdateStatus;
+  checkedAt: string | null;
+  releaseUrl: string;
+  releaseNotes: string;
+  error: string;
+};
+
 export type ReloginItemStatus = "pending" | "success" | "failed";
 
 export type ReloginItem = {
@@ -288,7 +301,13 @@ async function downloadAuthArchive(
 }
 
 export const api = {
-  health: () => request<{ ok: boolean }>("/api/health"),
+  health: () => request<{ ok: boolean; version?: string }>("/api/health"),
+  versionInfo: () =>
+    request<{ ok: boolean; version: VersionInfo }>("/api/system/version"),
+  checkForUpdates: () =>
+    request<{ ok: boolean; version: VersionInfo }>("/api/system/update/check", {
+      method: "POST",
+    }),
   authMe: () => request<{ ok: boolean } & AuthState>("/api/auth/me"),
   setup: (username: string, password: string, confirmPassword: string) =>
     request<{ ok: boolean } & AuthState>("/api/auth/setup", {

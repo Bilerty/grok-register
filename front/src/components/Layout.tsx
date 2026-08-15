@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { Activity, Database, LogOut, Menu, MoreHorizontal, PanelLeftClose, PanelLeftOpen, X } from "lucide-react";
 import { mobilePrimaryItems, navigationGroups, navigationItems } from "@/app/navigation";
+import { UpdateNotice } from "@/components/UpdateNotice";
 import { cn } from "@/lib/utils";
 
 function navigationActive(pathname: string, to: string) {
@@ -116,6 +117,7 @@ export function Layout({ jobRunning, onLogout }: { jobRunning?: boolean; onLogou
 
   return (
     <div className="min-h-[100dvh] bg-[#f7f8f7] text-foreground">
+      <UpdateNotice />
       <a
         href="#main-content"
         className="fixed left-3 top-3 z-[100] -translate-y-24 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition-transform focus:translate-y-0"
