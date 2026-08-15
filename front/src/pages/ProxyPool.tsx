@@ -81,6 +81,10 @@ export function ProxyPoolPage() {
     "导入完成"
   );
   const handleProbeAll = () => run(() => api.proxyPoolProbe(), "探测完成");
+  const handleClearAll = () => {
+    if (!window.confirm("确认清空代理池的全部代理？此操作不可撤销。")) return;
+    void run(() => api.proxyPoolClear(), "代理池已清空");
+  };
   const handleProbeNode = (url: string) => run(() => api.proxyPoolProbeNode(url), "节点探测完成");
   const handleClear = (url: string) => run(() => api.proxyPoolClearCooldown(url), "已解除冷却");
   const handleRemove = (url: string) => {
@@ -106,9 +110,14 @@ export function ProxyPoolPage() {
             批量导入 HTTP(S) 代理，查看出口 IP、延迟与健康状态；不可达或冷却中的节点不会被调度。
           </p>
         </div>
-        <Button variant="outline" size="sm" disabled={busy} onClick={() => void handleProbeAll()}>
-          <RefreshCw className="mr-1 h-4 w-4" /> 探测全部节点
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" disabled={busy} onClick={() => void handleProbeAll()}>
+            <RefreshCw className="mr-1 h-4 w-4" /> 探测全部节点
+          </Button>
+          <Button variant="outline" size="sm" disabled={busy || !(data?.total)} onClick={() => void handleClearAll()}>
+            <Trash2 className="mr-1 h-4 w-4 text-red-500" /> 清空全部
+          </Button>
+        </div>
       </div>
 
       {pool ? (

@@ -487,6 +487,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ url }),
     }),
+  proxyPoolClear: () =>
+    request<{ ok: boolean; removed: number }>("/api/proxy-pool/clear", { method: "POST" }),
   job: () => request<{ ok: boolean; job: JobStatus }>("/api/job"),
   logs: (afterId = 0, limit = 500) =>
     request<{ ok: boolean; logs: LogItem[]; job: JobStatus }>(

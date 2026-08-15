@@ -340,7 +340,7 @@ class ProxyPool:
         self._persist_state()
         return result
 
-    def probe_all(self, max_workers: int = 8) -> dict:
+    def probe_all(self, max_workers: int = 16) -> dict:
         """并发探测全部节点，返回统计。"""
         urls = list(self.urls)
         if not urls:
@@ -483,6 +483,18 @@ class ProxyPool:
             self._dirty = True
         self._persist_state()
         return True
+
+    def clear(self) -> int:
+        """清空全部节点与状态，返回移除数量。"""
+        with self._lock:
+            removed = len(self.urls)
+            self.urls = []
+            self._nodes.clear()
+            self._leases.clear()
+            self._usage.clear()
+            self._dirty = True
+        self._persist_state()
+        return removed
 
 
 # ---------------------------------------------------------------------------

@@ -1540,6 +1540,18 @@ def create_app() -> FastAPI:
         gr.save_config()
         return {"ok": True, "total": len(pool.url_list())}
 
+    @app.post("/api/proxy-pool/clear")
+    def api_proxy_pool_clear() -> Dict[str, Any]:
+        if job_coordinator.status().get("running"):
+            raise HTTPException(status_code=409, detail="注册任务运行中，暂不可修改代理池")
+        gr = _gr()
+        gr.load_config()
+        pool = gr._pp.get_pool()
+        removed = pool.clear()
+        gr.config["proxy"] = ""
+        gr.save_config()
+        return {"ok": True, "removed": removed}
+
     @app.get("/api/job")
     def api_job_status() -> Dict[str, Any]:
         return {"ok": True, "job": job_coordinator.status()}
