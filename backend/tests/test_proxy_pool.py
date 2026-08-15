@@ -1,5 +1,6 @@
 """代理池 / 粘性代理框架测试。"""
 
+import time
 import unittest
 
 from backend.integrations.proxy import build_proxy_url_with_credentials
@@ -136,7 +137,7 @@ class CredentialOverrideTests(unittest.TestCase):
             proxy_username="u@x",
             proxy_password="p#1",
         ))
-        url = pool.resolve(scope_key="t")
+        url = pool.render(pool.resolve(scope_key="t"))
         self.assertEqual(url, "http://u%40x:p%231@127.0.0.1:8001")
 
 
@@ -164,6 +165,98 @@ class TaskScopeTests(unittest.TestCase):
         pp.bind_task(scope_key="reg-9")
         pp.release_task()
         self.assertEqual(pp.current_scope_key(), "")
+
+
+class HealthManagementTests(unittest.TestCase):
+
+    def _pool(self, probe_results):
+        calls = []
+        def probe(url):
+            calls.append(url)
+            return probe_results[url]
+        pool = pp.ProxyPool(
+            pp.MODE_POOL,
+            ["p1", "p2"],
+            cooldown_seconds=60,
+            probe=probe,
+        )
+        return pool, calls
+
+    def test_probe_on_pick_fails_over_to_next_node(self):
+        pool, calls = self._pool({
+            "p1": {"ok": False, "error": "bad"},
+            "p2": {"ok": True, "egress_ip": "1.2.3.4", "latency_ms": 120},
+        })
+        picked = pool.resolve(scope_key="t")
+        self.assertEqual(picked, "p2")
+        nodes = {n["url"]: n for n in pool.node_list()}
+        self.assertEqual(nodes["p1"]["status"], pp.STATUS_UNREACHABLE)
+        self.assertEqual(nodes["p2"]["status"], pp.STATUS_HEALTHY)
+        self.assertEqual(nodes["p2"]["egress_ip"], "1.2.3.4")
+
+    def test_probe_all_fail_raises_exhausted(self):
+        pool, _ = self._pool({
+            "p1": {"ok": False, "error": "bad"},
+            "p2": {"ok": False, "error": "bad"},
+        })
+        with self.assertRaises(pp.ProxyPoolExhausted):
+            pool.resolve(scope_key="t")
+
+    def test_report_failure_puts_node_in_cooldown(self):
+        pool, _ = self._pool({"p1": {"ok": True}, "p2": {"ok": True}})
+        pool.report_failure("p1", reason="registration_risk")
+        picks = [pool.resolve(scope_key=f"t{i}") for i in range(3)]
+        self.assertTrue(all(pick == "p2" for pick in picks))
+        nodes = {n["url"]: n for n in pool.node_list()}
+        self.assertEqual(nodes["p1"]["status"], pp.STATUS_COOLDOWN)
+        self.assertGreater(nodes["p1"]["cooldown_remaining"], 0)
+
+    def test_cooldown_expires(self):
+        pool, _ = self._pool({"p1": {"ok": True}, "p2": {"ok": True}})
+        pool.report_failure("p1", reason="registration_risk")
+        with pool._lock:
+            pool._nodes["p1"].cooldown_until = time.time() - 1
+        picks = [pool.resolve(scope_key=f"t{i}") for i in range(4)]
+        self.assertIn("p1", picks)
+
+    def test_clear_cooldown(self):
+        pool, _ = self._pool({"p1": {"ok": True}, "p2": {"ok": True}})
+        pool.report_failure("p1", reason="registration_risk")
+        pool.clear_cooldown("p1")
+        nodes = {n["url"]: n for n in pool.node_list()}
+        self.assertEqual(nodes["p1"]["status"], pp.STATUS_HEALTHY)
+
+    def test_report_success_records_egress(self):
+        pool, _ = self._pool({"p1": {"ok": True}, "p2": {"ok": True}})
+        pool.report_success("p1", egress_ip="9.8.7.6", latency_ms=88)
+        nodes = {n["url"]: n for n in pool.node_list()}
+        self.assertEqual(nodes["p1"]["egress_ip"], "9.8.7.6")
+        self.assertEqual(nodes["p1"]["latency_ms"], 88)
+        self.assertEqual(nodes["p1"]["status"], pp.STATUS_HEALTHY)
+
+    def test_zero_cooldown_disables_cooling(self):
+        pool = pp.ProxyPool(pp.MODE_POOL, ["p1", "p2"], cooldown_seconds=0)
+        pool.report_failure("p1", reason="x")
+        nodes = {n["url"]: n for n in pool.node_list()}
+        self.assertNotEqual(nodes["p1"]["status"], pp.STATUS_COOLDOWN)
+
+
+class PoolManagementTests(unittest.TestCase):
+
+    def test_add_urls_dedupes_and_validates(self):
+        pool = pp.ProxyPool(pp.MODE_POOL, ["http://127.0.0.1:8001"])
+        result = pool.add_urls(["http://127.0.0.1:8002", "http://127.0.0.1:8001", "socks5://bad"])
+        self.assertEqual(result["added"], ["http://127.0.0.1:8002"])
+        self.assertEqual(result["invalid"], ["socks5://bad"])
+        self.assertEqual(len(pool.url_list()), 2)
+
+    def test_remove_url_clears_state_and_leases(self):
+        pool = pp.ProxyPool(pp.MODE_POOL, ["p1", "p2"])
+        pool.resolve(scope_key="a")
+        self.assertTrue(pool.remove_url("p1"))
+        self.assertNotIn("p1", pool.url_list())
+        self.assertNotIn("p1", [n["url"] for n in pool.node_list()])
+        self.assertFalse(pool.remove_url("p1"))
 
 
 if __name__ == "__main__":

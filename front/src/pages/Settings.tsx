@@ -450,6 +450,14 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
               placeholder="可选，原样填写"
               helper="覆盖代理地址中的密码；特殊字符无需百分号编码。"
             />
+            <ConfigField
+              {...fieldState}
+              label="池节点冷却时长（秒）"
+              field="proxy_cooldown_seconds"
+              type="number"
+              placeholder="600"
+              helper="代理池节点被风控或探测失败后进入冷却，期间不参与调度；0 表示不冷却。"
+            />
             <ConfigField {...fieldState}
               label="账号间隔（秒）"
               field="account_interval"

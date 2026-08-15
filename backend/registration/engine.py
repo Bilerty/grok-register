@@ -319,6 +319,8 @@ DEFAULT_CONFIG = {
     # 原始凭据（可选）：无需手工百分号编码，框架统一处理特殊字符
     "proxy_username": "",
     "proxy_password": "",
+    # 池节点风控/失败冷却时长（秒），0 表示不冷却
+    "proxy_cooldown_seconds": 600,
     "enable_nsfw": True,
     "debug_mode": False,
     "browser_engine": _bs.normalize_browser_engine(
@@ -783,13 +785,37 @@ def _build_proxy_pool_from_config():
     return _pp.build_pool_from_config(
         lambda key, default=None: config.get(key, default),
         file_read=file_read,
+        state_file=os.path.join(DATA_ROOT, "proxy_pool_state.json"),
+        probe=_probe_proxy_node,
     )
+
+
+def _probe_proxy_node(proxy_url: str) -> dict:
+    """代理节点连通性探测：TCP + 出口 IP + 延迟（毫秒）。"""
+    started = time.time()
+    try:
+        ok, detail = _conn.check_proxy(proxy_url, http_get)
+        latency_ms = int((time.time() - started) * 1000)
+        egress = ""
+        if ok:
+            match = re.search(r"出口IP ([0-9a-fA-F.:]+)", str(detail or ""))
+            if match:
+                egress = match.group(1)
+        return {
+            "ok": ok,
+            "egress_ip": egress,
+            "latency_ms": latency_ms,
+            "error": "" if ok else str(detail or "")[:200],
+        }
+    except Exception as exc:
+        return {"ok": False, "egress_ip": "", "latency_ms": None, "error": str(exc)[:200]}
 
 
 def _configure_proxy_pool():
     proxy_keys = (
         "proxy", "proxy_mode", "proxy_selection", "proxy_sticky_scope",
         "proxy_file", "proxy_username", "proxy_password",
+        "proxy_cooldown_seconds",
     )
 
     def signature():
@@ -2829,6 +2855,20 @@ def registration_log(message):
     print(line, flush=True)
 
 
+def _preflight_proxy_pool(log_callback) -> None:
+    """池模式启动前连通检测：探测全部节点；无可达节点直接退出本轮。"""
+    pool = _pp.get_pool()
+    if pool.mode != _pp.MODE_POOL:
+        return
+    summary = pool.probe_all()
+    log_callback(
+        f"[代理池] 启动前探测: 共 {summary.get('total', 0)} 节点, "
+        f"健康 {summary.get('healthy', 0)}, 不可达 {summary.get('unreachable', 0)}"
+    )
+    if summary.get("healthy", 0) <= 0:
+        raise RuntimeError("代理池连通检测全部失败，无可达节点，任务退出")
+
+
 def run_registration(count):
     controller = RegistrationStopController()
     reset_network_route_logs()
@@ -2862,6 +2902,7 @@ def run_registration(count):
         _cleanup_stale_profiles(log_callback=registration_log)
     except Exception:
         pass
+    _preflight_proxy_pool(registration_log)
     try:
         startup_checks = _conn.run_connectivity_checks(config, http_get, http_post)
         for name, ok, detail in startup_checks:
@@ -3095,6 +3136,7 @@ def run_registration(count):
                                 nsfw_status=nsfw_status,
                                 extra={"任务序号": i, "并发数": workers},
                             )
+                            _pp.get_pool().report_success(_pp.current_raw_url())
                     except RegistrationCancelled:
                         cancelled_email = current_attempt_email(email)
                         if cancelled_email:
@@ -3161,6 +3203,9 @@ def run_registration(count):
                         retry = 0
                         if kind == FAIL_RISK:
                             cpa_detail.update(status="rejected", error=str(exc))
+                            _pp.get_pool().report_failure(
+                                _pp.current_raw_url(), reason="registration_risk"
+                            )
                             if apply_risk_bot_flag(cpa_detail, exc):
                                 registration_log(
                                     f"[W{wid+1}] [!] 注册风控标记 bot_risk"
@@ -3427,6 +3472,7 @@ def run_registration(count):
                         nsfw_status=nsfw_status,
                         extra={"任务序号": i, "并发数": 1},
                     )
+                    _pp.get_pool().report_success(_pp.current_raw_url())
                 registration_log(f"[*] 当前统计: 成功 {success_count} | 失败 {fail_count}")
                 if (
                     counted_success
@@ -3501,6 +3547,9 @@ def run_registration(count):
                 i += 1
                 if kind == FAIL_RISK:
                     cpa_detail.update(status="rejected", error=str(exc))
+                    _pp.get_pool().report_failure(
+                        _pp.current_raw_url(), reason="registration_risk"
+                    )
                     if apply_risk_bot_flag(cpa_detail, exc):
                         registration_log(
                             "[!] 注册风控标记 bot_risk"
