@@ -797,7 +797,7 @@ def _probe_proxy_node(proxy_url: str) -> dict:
     """代理节点连通性探测：TCP + 出口 IP + 延迟（毫秒）。"""
     started = time.time()
     try:
-        ok, detail = _conn.check_proxy(proxy_url, http_get)
+        _name, ok, detail = _conn.check_proxy(proxy_url, http_get)
         latency_ms = int((time.time() - started) * 1000)
         egress = ""
         if ok:

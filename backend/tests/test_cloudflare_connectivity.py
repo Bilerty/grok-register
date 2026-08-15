@@ -259,5 +259,32 @@ class TcpOpenIPv6Tests(unittest.TestCase):
 
 
 
+
+class ProbeProxyNodeTests(unittest.TestCase):
+    """engine._probe_proxy_node：check_proxy 返回 3 元组，必须正确解包。"""
+
+    def test_unpacks_three_tuple_and_extracts_exit_ip(self):
+        from backend.registration import engine as gr
+        with mock.patch.object(
+            gr._conn, "check_proxy",
+            return_value=("代理", True, "gate:443 可用，出口IP 2001:bc8::1"),
+        ):
+            result = gr._probe_proxy_node("http://u:p@gate:443")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["egress_ip"], "2001:bc8::1")
+        self.assertIsInstance(result["latency_ms"], int)
+
+    def test_failure_detail_returns_error(self):
+        from backend.registration import engine as gr
+        with mock.patch.object(
+            gr._conn, "check_proxy",
+            return_value=("代理", False, "TCP 通，出站探测失败"),
+        ):
+            result = gr._probe_proxy_node("http://u:p@gate:443")
+        self.assertFalse(result["ok"])
+        self.assertIn("出站探测失败", result["error"])
+
+
+
 if __name__ == "__main__":
     unittest.main()
