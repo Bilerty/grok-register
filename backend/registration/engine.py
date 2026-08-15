@@ -351,6 +351,9 @@ DEFAULT_CONFIG = {
     "grok2api_remote_username": "",
     "grok2api_remote_password": "",
     "grok2api_auto_import": True,
+    # Grok2API 推送时三渠道（build/web/console）账号绑定同一个出口代理
+    # （优先复用目标平台已有同出口节点，否则新建并绑定注册代理）
+    "grok2api_same_proxy": False,
     # CPA 远程上传开关（独立于 cpa_auto_add；后者控制整个 SSO→auth 链路）
     "cpa_upload_enabled": True,
     # Sub2API：注册拿到 SSO 后直接上传 sso-to-oauth
@@ -1729,6 +1732,15 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
                                     _cpa_log(
                                         f"Grok2API 远程导入失败 [{format_name}]: {remote_g2a_exc}"
                                     )
+                            if config.get("grok2api_same_proxy"):
+                                try:
+                                    _bind_g2a_three_channel_same_proxy(
+                                        client, email, _cpa_log
+                                    )
+                                except Exception as same_proxy_exc:
+                                    _cpa_log(
+                                        f"Grok2API 三渠道同代理绑定失败: {same_proxy_exc}"
+                                    )
                     except Exception as remote_client_exc:
                         remote_errors["client"] = str(remote_client_exc)
                         _cpa_log(f"Grok2API 远程客户端初始化失败: {remote_client_exc}")
@@ -2855,8 +2867,71 @@ def registration_log(message):
     print(line, flush=True)
 
 
+def _bind_g2a_three_channel_same_proxy(client, email, log_callback) -> None:
+    """Grok2API 三渠道同代理：build/web/console 账号绑定注册时使用的出口。
+
+    优先在目标平台已有节点中按出口 IP 匹配（代理 URL 不回显，无法直接比对），
+    找不到则按渠道新建节点并写入注册代理地址；console 账号复用 web 节点。
+    """
+    exit_ip = _pp.current_node_exit_ip()
+    if not exit_ip:
+        probe = _probe_proxy_node(_pp.current_proxy_url())
+        exit_ip = str(probe.get("egress_ip") or "")
+    proxy_url = _pp.current_proxy_url()
+
+    nodes = client.list_egress_nodes()
+    plan = _grok2api.plan_same_proxy_bindings(nodes, exit_ip)
+
+    node_by_scope: dict[str, str] = {}
+    for scope in ("grok_build", "grok_web"):
+        node_id = plan.get(scope)
+        if node_id:
+            log_callback(f"[G2A同代理] {scope} 复用已有节点 #{node_id} (出口 {exit_ip})")
+        else:
+            name = f"reg-{scope}-{exit_ip or 'bind'}"
+            created_id = ""
+            try:
+                created = client.create_egress_node(
+                    name=name, scope=scope, proxy_url=proxy_url, enabled=True
+                )
+                created_id = str(
+                    (created.get("data") or {}).get("id") or created.get("id") or ""
+                ) if isinstance(created, dict) else ""
+            except Exception as create_exc:
+                log_callback(f"[G2A同代理] {scope} 创建节点失败，尝试按名称匹配: {create_exc}")
+            if not created_id:
+                for node in client.list_egress_nodes(scope=scope):
+                    if str(node.get("name") or "") == name and node.get("proxyConfigured"):
+                        created_id = str(node.get("id") or "")
+                        break
+            if not created_id:
+                raise RuntimeError(f"{scope} 渠道同代理节点创建/匹配失败")
+            node_id = created_id
+            log_callback(f"[G2A同代理] {scope} 已创建节点 #{node_id} 并写入注册代理")
+        node_by_scope[scope] = node_id
+
+    for provider, node_scope in (
+        ("grok_build", "grok_build"),
+        ("grok_web", "grok_web"),
+        ("grok_console", "grok_web"),
+    ):
+        accounts = client.list_accounts(search=email, provider=provider)
+        ids = [
+            str(account.get("id") or "")
+            for account in accounts
+            if str(account.get("email") or "").strip().lower() == str(email or "").strip().lower()
+            and account.get("id")
+        ]
+        if not ids:
+            log_callback(f"[G2A同代理] {provider} 未找到账号 {email}，跳过绑定")
+            continue
+        client.bind_accounts_to_node(node_by_scope[node_scope], provider, ids, mode="manual")
+        log_callback(
+            f"[G2A同代理] {provider} 账号 {len(ids)} 个已绑定节点 #{node_by_scope[node_scope]} (出口 {exit_ip})"
+        )
+
+
 def _preflight_proxy_pool(log_callback) -> None:
-    """池模式启动前连通检测：探测全部节点；无可达节点直接退出本轮。"""
     pool = _pp.get_pool()
     if pool.mode != _pp.MODE_POOL:
         return

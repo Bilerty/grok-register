@@ -106,19 +106,24 @@ function ToggleRow({
   description,
   checked,
   onCheckedChange,
+  disabled = false,
 }: {
   title: string;
   description?: string;
   checked: boolean;
   onCheckedChange: (value: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
-    <div className="flex min-h-16 items-center justify-between gap-4 rounded-xl border bg-muted/35 px-3 py-3 sm:px-4">
+    <div className={cn(
+      "flex min-h-16 items-center justify-between gap-4 rounded-xl border bg-muted/35 px-3 py-3 sm:px-4",
+      disabled && "opacity-60"
+    )}>
       <div className="min-w-0">
         <div className="text-sm font-medium text-foreground">{title}</div>
         {description ? <div className="mt-0.5 text-xs leading-5 text-muted-foreground">{description}</div> : null}
       </div>
-      <Switch checked={checked} onCheckedChange={onCheckedChange} label={title} />
+      <Switch checked={checked} onCheckedChange={onCheckedChange} label={title} disabled={disabled} />
     </div>
   );
 }
@@ -606,6 +611,13 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                     description="生成三种 Grok2API JSON 后立即登录远程管理端并逐个导入；导入结果单独记录"
                     checked={!!config.grok2api_auto_import}
                     onCheckedChange={(value) => setField("grok2api_auto_import", value)}
+                  />
+                  <ToggleRow
+                    title="三渠道推送同一代理"
+                    description="导入后把 build/web/console 账号绑定到注册时使用的同一出口代理；目标平台已有同出口节点时直接复用，否则自动创建节点并写入该代理。总开关关闭时强制关闭。"
+                    checked={!!config.grok2api_auto_import && !!config.grok2api_same_proxy}
+                    disabled={!config.grok2api_auto_import}
+                    onCheckedChange={(value) => setField("grok2api_same_proxy", value)}
                   />
                 </CardContent>
               </Card>

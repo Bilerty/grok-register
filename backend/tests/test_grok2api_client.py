@@ -35,6 +35,10 @@ class FakeSession:
         self.calls.append((url, dict(kwargs)))
         return self.responses.pop(0)
 
+    def get(self, url, **kwargs):
+        self.calls.append((url, dict(kwargs)))
+        return self.responses.pop(0)
+
     def close(self):
         self.closed = True
 
@@ -141,5 +145,71 @@ class Grok2APIClientTests(unittest.TestCase):
         self.assertFalse(external.closed)
 
 
+class SameProxyPlanTests(unittest.TestCase):
+    """三渠道同代理绑定规划：纯函数测试。"""
+
+    def _node(self, scope, node_id, configured=True, exit_ip=""):
+        return {
+            "id": str(node_id), "scope": scope, "proxyConfigured": configured,
+            "exitIp": exit_ip, "ipv4Probe": None, "ipv6Probe": None,
+        }
+
+    def test_matches_nodes_by_exit_ip(self):
+        nodes = [
+            self._node("grok_build", 1, exit_ip="1.2.3.4"),
+            self._node("grok_web", 2, exit_ip="9.9.9.9"),
+            self._node("grok_console", 3, exit_ip="1.2.3.4"),
+        ]
+        plan = grok2api_client.plan_same_proxy_bindings(nodes, "1.2.3.4")
+        self.assertEqual(plan["grok_build"], "1")
+        self.assertEqual(plan["grok_web"], None)
+        self.assertEqual(plan["grok_console"], "3")
+
+    def test_ignores_nodes_without_configured_proxy(self):
+        nodes = [
+            self._node("grok_build", 1, configured=False, exit_ip="1.2.3.4"),
+        ]
+        plan = grok2api_client.plan_same_proxy_bindings(nodes, "1.2.3.4")
+        self.assertIsNone(plan["grok_build"])
+
+    def test_empty_exit_ip_means_create_all(self):
+        nodes = [self._node("grok_build", 1, exit_ip="1.2.3.4")]
+        plan = grok2api_client.plan_same_proxy_bindings(nodes, "")
+        self.assertIsNone(plan["grok_build"])
+        self.assertIsNone(plan["grok_web"])
+
+    def test_uses_family_probe_exit_ip_as_fallback(self):
+        node = self._node("grok_web", 2)
+        node["ipv4Probe"] = {"exitIp": "5.6.7.8"}
+        plan = grok2api_client.plan_same_proxy_bindings([node], "5.6.7.8")
+        self.assertEqual(plan["grok_web"], "2")
+
+
+class AdminApiTests(unittest.TestCase):
+    """新增管理 API 方法：登录令牌与响应解析。"""
+
+    def _client(self, responses):
+        session = FakeSession(responses)
+        return Grok2APIClient("https://g2a.test", "admin", "secret", session=session)
+
+    def test_list_egress_nodes_unwraps_items(self):
+        login_resp = FakeResponse(200, {"data": {"tokens": {"accessToken": "tok"}}})
+        list_resp = FakeResponse(200, {"success": True, "data": {"items": [{"id": "7", "name": "n"}]}})
+        client = self._client([login_resp, list_resp])
+        items = client.list_egress_nodes(scope="grok_build")
+        self.assertEqual(items, [{"id": "7", "name": "n"}])
+
+    def test_bind_accounts_posts_ids_as_strings(self):
+        login_resp = FakeResponse(200, {"data": {"tokens": {"accessToken": "tok"}}})
+        bind_resp = FakeResponse(200, {"success": True})
+        client = self._client([login_resp, bind_resp])
+        client.bind_accounts_to_node("11", "grok_web", [101, "102"], mode="manual")
+        bind_call = [call for call in client.session.calls if call[0].endswith("/accounts")]
+        self.assertTrue(bind_call)
+        self.assertEqual(bind_call[-1][1]["json"]["ids"], ["101", "102"])
+
+
 if __name__ == "__main__":
+    unittest.main()
+
     unittest.main()

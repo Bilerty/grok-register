@@ -657,6 +657,18 @@ def current_raw_url() -> str:
     return getattr(_tls, "raw_url", "") or ""
 
 
+def current_node_exit_ip() -> str:
+    """当前任务绑定节点的探测出口 IP（无则空串）。"""
+    raw = current_raw_url()
+    if not raw:
+        return ""
+    pool = _current_pool()
+    for node in pool.node_list():
+        if node.get("url") == raw:
+            return str(node.get("egress_ip") or "")
+    return ""
+
+
 def current_scope_key() -> str:
     return getattr(_tls, "scope_key", "") or ""
 

@@ -71,5 +71,6 @@
   "proxy_sticky_scope": "task",
   "proxy_file": "",
   "proxy_username": "",
-  "proxy_password": ""
+  "proxy_password": "",
+  "grok2api_same_proxy": false
 }
