@@ -194,9 +194,15 @@ class ProxyPool:
         return not self.urls
 
     def resolve(self, scope_key: str = "", email: str = "") -> str:
-        """返回本任务使用的代理 URL（含 {account}/{email} 展开，未并入原始凭据）。"""
-        with self._lock:
-            return self._resolve_locked(scope_key, email)
+        """返回本任务使用的代理 URL（含 {account}/{email} 展开，未并入原始凭据）。
+
+        持久化在锁外执行：锁内只改内存状态，绝不碰磁盘 IO。
+        """
+        try:
+            with self._lock:
+                return self._resolve_locked(scope_key, email)
+        finally:
+            self._persist_state()
 
     def resolve_template(self, scope_key: str = "", email: str = "") -> str:
         """返回本任务对应的模板（池条目原文），作为状态记录/上报的键。"""
@@ -320,7 +326,6 @@ class ProxyPool:
                 self._nodes[template] = state
             state.last_used_at = now
             self._dirty = True
-            self._persist_state()
             return template, use_url
 
         raise ProxyPoolExhausted(f"代理池节点探测全部失败: {last_error}")

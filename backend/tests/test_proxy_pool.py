@@ -1,5 +1,6 @@
 """代理池 / 粘性代理框架测试。"""
 
+import json
 import time
 import unittest
 
@@ -290,6 +291,30 @@ class TemplatePoolTests(unittest.TestCase):
         pool.report_failure("http://poolA.{account}:tok@127.0.0.1:2260", reason="risk")
         picks = [pool.resolve(scope_key=f"t{i}") for i in range(4)]
         self.assertTrue(all("poolB." in pick for pick in picks))
+
+
+
+
+class PersistSafetyTests(unittest.TestCase):
+    """锁内不得再做磁盘 IO：带 state_file + probe 的 pick 不能自死锁。"""
+
+    def test_resolve_with_state_file_and_probe_does_not_deadlock(self):
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = os.path.join(tmp, "state.json")
+            pool = pp.ProxyPool(
+                pp.MODE_POOL,
+                ["http://poolA.{account}:tok@127.0.0.1:2260"],
+                state_file=state_file,
+                probe=lambda url: {"ok": True, "egress_ip": "1.2.3.4", "latency_ms": 10},
+            )
+            url = pool.resolve(scope_key="reg-1")
+            self.assertIn("poolA.reg-1", url)
+            # 状态已落盘
+            with open(state_file, encoding="utf-8") as f:
+                data = json.load(f)
+            self.assertIn("http://poolA.{account}:tok@127.0.0.1:2260", data)
+            self.assertGreater(data["http://poolA.{account}:tok@127.0.0.1:2260"]["last_used_at"], 0)
 
 
 
