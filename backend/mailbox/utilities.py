@@ -45,6 +45,11 @@ _CODE_WITH_CONTEXT_RE = re.compile(
 )
 _CODE_BARE_RE = re.compile(r"\b(" + _CODE_TOKEN + r")\b")
 _NUMERIC_CODE_RES = [
+    re.compile(
+        r"(?:verification|confirmation|confirm|your)\s+code\s*(?:is|：|:)?\s*(\d{3}-\d{3})",
+        re.IGNORECASE,
+    ),
+    re.compile(r"验证码\s*(?:是|为|：|:)?\s*(\d{3}-\d{3})"),
     re.compile(r"verification\s+code[:\s]+(\d{4,8})", re.IGNORECASE),
     re.compile(r"your\s+code[:\s]+(\d{4,8})", re.IGNORECASE),
     re.compile(r"confirm(?:ation)?\s+code[:\s]+(\d{4,8})", re.IGNORECASE),
@@ -144,6 +149,10 @@ def _match_code(pattern: re.Pattern, source: str) -> Optional[str]:
 def extract_verification_code(text: str, subject: str = "") -> Optional[str]:
     subject = subject or ""
     text = text or ""
+    # 渠道适配器通常已清理 HTML；这里再做一次兜底，避免直接传入原始
+    # HTML 时把 style/script 中的数字片段误当验证码。
+    if "<" in text:
+        text = strip_html(text)
     # 主题最干净，优先；正文里带 code 关键字的上下文次之，裸 token 最后。
     for pattern in (_CODE_WITH_CONTEXT_RE, _CODE_BARE_RE):
         for source in (subject, text):

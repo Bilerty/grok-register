@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
-import { Activity, Database, LogOut, Menu, MoreHorizontal, PanelLeftClose, PanelLeftOpen, X } from "lucide-react";
+import { Activity, Database, LogOut, Menu, MoreHorizontal, PanelLeftClose, PanelLeftOpen, RefreshCw, X } from "lucide-react";
 import { mobilePrimaryItems, navigationGroups, navigationItems } from "@/app/navigation";
-import { UpdateNotice } from "@/components/UpdateNotice";
+import { UPDATE_SNAPSHOT_EVENT, UpdateNotice } from "@/components/UpdateNotice";
+import { Toast } from "@/components/ui";
+import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 function navigationActive(pathname: string, to: string) {
@@ -82,6 +84,11 @@ function NavigationContent({ onNavigate, collapsed = false }: { onNavigate?: () 
 export function Layout({ jobRunning, onLogout }: { jobRunning?: boolean; onLogout?: () => void }) {
   const location = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updateToast, setUpdateToast] = useState<{ message: string; tone: "success" | "error" }>({
+    message: "",
+    tone: "success",
+  });
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try {
       return window.localStorage.getItem("grok-sidebar-collapsed") === "1";
@@ -114,10 +121,48 @@ export function Layout({ jobRunning, onLogout }: { jobRunning?: boolean; onLogou
       document.body.style.overflow = "";
     };
   }, [mobileMenuOpen]);
+  useEffect(() => {
+    if (!updateToast.message) return;
+    const timer = window.setTimeout(
+      () => setUpdateToast((current) => ({ ...current, message: "" })),
+      4000,
+    );
+    return () => window.clearTimeout(timer);
+  }, [updateToast.message]);
+
+  const checkForUpdates = async () => {
+    if (checkingUpdate) return;
+    setCheckingUpdate(true);
+    try {
+      const response = await api.checkForUpdates();
+      const version = response.version;
+      window.dispatchEvent(
+        new CustomEvent(UPDATE_SNAPSHOT_EVENT, { detail: { version } }),
+      );
+      if (version.status === "check_failed") {
+        setUpdateToast({ message: version.error || "检查更新失败", tone: "error" });
+      } else if (version.updateAvailable) {
+        setUpdateToast({ message: `发现新版本 ${version.latestVersion}`, tone: "success" });
+      } else {
+        setUpdateToast({
+          message: `当前已是最新版本 ${version.currentVersion}`,
+          tone: "success",
+        });
+      }
+    } catch (error) {
+      setUpdateToast({
+        message: error instanceof Error ? error.message : "检查更新失败",
+        tone: "error",
+      });
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
 
   return (
     <div className="min-h-[100dvh] bg-[#f7f8f7] text-foreground">
       <UpdateNotice />
+      <Toast message={updateToast.message} tone={updateToast.tone} />
       <a
         href="#main-content"
         className="fixed left-3 top-3 z-[100] -translate-y-24 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition-transform focus:translate-y-0"
@@ -139,6 +184,17 @@ export function Layout({ jobRunning, onLogout }: { jobRunning?: boolean; onLogou
           </button>
         </div>
         <div className="flex items-center gap-2 text-xs text-slate-500">
+          <button
+            type="button"
+            onClick={() => void checkForUpdates()}
+            disabled={checkingUpdate}
+            className="flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-950 disabled:cursor-wait disabled:opacity-60"
+            aria-label={checkingUpdate ? "正在检查更新" : "检查更新"}
+            title={checkingUpdate ? "正在检查更新" : "检查更新"}
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5", checkingUpdate && "animate-spin")} aria-hidden="true" />
+            <span className="hidden sm:inline">{checkingUpdate ? "检查中" : "检查更新"}</span>
+          </button>
           <span className="hidden sm:inline">本地控制台</span>
           <StatusPill running={jobRunning} compact />
         </div>

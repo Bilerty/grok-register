@@ -9,6 +9,7 @@ const DISMISSED_VERSION_KEY = "grok-register-dismissed-update-version";
 const SNAPSHOT_POLL_MS = 5 * 60 * 1000;
 const PREVIEW_QUERY_KEY = "preview-update";
 const PREVIEW_LATEST_VERSION = "v9.9.9-preview";
+export const UPDATE_SNAPSHOT_EVENT = "grok-update-snapshot";
 
 function dismissedVersion() {
   try {
@@ -50,18 +51,27 @@ export function UpdateNotice() {
     [location.search],
   );
 
-  const applySnapshot = useCallback((next: VersionInfo) => {
+  const applySnapshot = useCallback((next: VersionInfo, forceOpen = false) => {
     setVersion(next);
     if (
       next.updateAvailable
       && next.latestVersion
-      && dismissedVersion() !== next.latestVersion
+      && (forceOpen || dismissedVersion() !== next.latestVersion)
     ) {
       setOpen(true);
     } else {
       setOpen(false);
     }
   }, []);
+
+  useEffect(() => {
+    const onSnapshot = (event: Event) => {
+      const next = (event as CustomEvent<{ version?: VersionInfo }>).detail?.version;
+      if (next) applySnapshot(next, true);
+    };
+    window.addEventListener(UPDATE_SNAPSHOT_EVENT, onSnapshot);
+    return () => window.removeEventListener(UPDATE_SNAPSHOT_EVENT, onSnapshot);
+  }, [applySnapshot]);
 
   const refresh = useCallback(async () => {
     if (previewEnabled) {

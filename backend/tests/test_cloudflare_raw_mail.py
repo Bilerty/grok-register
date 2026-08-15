@@ -118,6 +118,17 @@ class CloudflareRawMailTests(unittest.TestCase):
         payload = {"id": 8, "text": f"Your verification code is {CODE}"}
         self.assertEqual(self._extract(payload), CODE)
 
+    def test_numeric_hyphenated_code_with_explicit_subject_context(self):
+        subject = "SpaceXAI confirmation code: 134-771"
+        self.assertEqual(extract_verification_code("", subject), "134-771")
+
+    def test_bare_numeric_hyphenated_value_is_not_treated_as_code(self):
+        self.assertIsNone(extract_verification_code("width range 100-200", ""))
+
+    def test_numeric_code_text_inside_style_block_is_not_treated_as_code(self):
+        html = "<style>.mail:before { content: 'confirmation code: 180-699'; }</style>"
+        self.assertIsNone(extract_verification_code(html, ""))
+
     def test_parse_raw_email_falls_back_to_original_on_bare_body(self):
         parsed = parse_raw_email("just a bare body with code I6R-B2W")
         self.assertIn("I6R-B2W", parsed["text"])

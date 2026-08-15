@@ -152,6 +152,36 @@ class SignupFlowTests(unittest.TestCase):
         self.assertFalse(fill_code.called)
         self.assertTrue(any("页面元素识别资料填写页" in message for message in logs))
 
+    def test_hyphenated_numeric_code_is_filled_without_separator(self):
+        with mock.patch.dict(
+            signup_flow._deps,
+            {"get_oai_code": mock.Mock(return_value="134-771")},
+        ), mock.patch.object(
+            signup_flow,
+            "_native_fill_code",
+            return_value="filled-aggregate",
+        ) as fill_code, mock.patch.object(
+            signup_flow,
+            "_native_click_action",
+            return_value="Continue",
+        ), mock.patch.object(
+            signup_flow,
+            "_profile_page_snapshot",
+            return_value={"profile_form": False},
+        ), mock.patch.object(
+            signup_flow,
+            "_wait_profile_page_after_code",
+            return_value={"profile_form": True, "url": "https://accounts.x.ai/sign-up"},
+        ), mock.patch.object(signup_flow, "page", mock.Mock()):
+            result = signup_flow.fill_code_and_submit(
+                "fixture@example.com",
+                "fixture-token",
+                timeout=1,
+            )
+
+        self.assertEqual(result, "134-771")
+        fill_code.assert_called_once_with("134771")
+
 
 if __name__ == "__main__":
     unittest.main()
