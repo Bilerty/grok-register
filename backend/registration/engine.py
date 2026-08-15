@@ -393,6 +393,20 @@ class AccountRetryNeeded(Exception):
     pass
 
 
+_TRANSIENT_MAIL_ERROR_MARKERS = (
+    "tls connect error", "sslerror", "tls handshake", "handshake", "invalid library",
+    "curl: (7)", "curl: (28)", "curl: (35)", "curl: (52)", "curl: (56)",
+    "connection reset", "connection aborted", "connectionerror", "timed out", "timeout",
+    "握手", "连接失败", "网络",
+)
+
+
+def is_transient_mail_error(exc) -> bool:
+    """邮箱创建/验证码阶段的瞬时 TLS/网络错误（可重试，而非直接判失败）。"""
+    low = str(exc or "").lower()
+    return any(marker in low for marker in _TRANSIENT_MAIL_ERROR_MARKERS)
+
+
 class EmailDomainRejected(Exception):
     """xAI 拒绝当前邮箱域名（如公共临时域被拉黑）。"""
 
@@ -3087,14 +3101,21 @@ def run_registration(count):
                     }
                     nsfw_status = "未执行"
                     try:
-                        open_signup_page(
-                            log_callback=lambda m: registration_log(f"[W{wid+1}] {m}"),
-                            cancel_callback=controller.should_stop,
-                        )
-                        email, dev_token, submitted_at = fill_email_and_submit(
-                            log_callback=lambda m: registration_log(f"[W{wid+1}] {m}"),
-                            cancel_callback=controller.should_stop,
-                        )
+                        try:
+                            open_signup_page(
+                                log_callback=lambda m: registration_log(f"[W{wid+1}] {m}"),
+                                cancel_callback=controller.should_stop,
+                            )
+                            email, dev_token, submitted_at = fill_email_and_submit(
+                                log_callback=lambda m: registration_log(f"[W{wid+1}] {m}"),
+                                cancel_callback=controller.should_stop,
+                            )
+                        except Exception as create_exc:
+                            if is_transient_mail_error(create_exc):
+                                raise AccountRetryNeeded(
+                                    f"打开注册页/创建邮箱瞬时网络失败: {create_exc}"
+                                )
+                            raise
                         code = fill_code_and_submit(
                             email,
                             dev_token,
@@ -3395,13 +3416,27 @@ def run_registration(count):
                 for mail_try in range(1, max_mail_retry + 1):
                     mail_attempt_started_at = time.time()
                     registration_log(f"[*] 1. 打开注册页 (尝试 {mail_try}/{max_mail_retry})")
-                    open_signup_page(
-                        log_callback=registration_log, cancel_callback=controller.should_stop
-                    )
-                    registration_log("[*] 2. 创建邮箱并提交")
-                    email, dev_token, submitted_at = fill_email_and_submit(
-                        log_callback=registration_log, cancel_callback=controller.should_stop
-                    )
+                    try:
+                        open_signup_page(
+                            log_callback=registration_log, cancel_callback=controller.should_stop
+                        )
+                        registration_log("[*] 2. 创建邮箱并提交")
+                        email, dev_token, submitted_at = fill_email_and_submit(
+                            log_callback=registration_log, cancel_callback=controller.should_stop
+                        )
+                    except Exception as create_exc:
+                        if is_transient_mail_error(create_exc) and mail_try < max_mail_retry:
+                            registration_log(
+                                f"[!] 打开注册页/创建邮箱瞬时网络失败，自动重试 "
+                                f"({mail_try}/{max_mail_retry}): {create_exc}"
+                            )
+                            try:
+                                restart_browser(log_callback=registration_log)
+                            except Exception:
+                                pass
+                            sleep_with_cancel(1, controller.should_stop)
+                            continue
+                        raise
                     registration_log(f"[*] 邮箱: {email}")
                     registration_log(f"[Debug] 邮箱 token 已获取 (len={len(str(dev_token or ''))})")
                     try:
@@ -3426,7 +3461,10 @@ def run_registration(count):
                         break
                     except Exception as mail_exc:
                         msg = str(mail_exc)
-                        if ("未收到验证码" in msg or "验证码" in msg) and mail_try < max_mail_retry:
+                        if (
+                            ("未收到验证码" in msg or "验证码" in msg or is_transient_mail_error(mail_exc))
+                            and mail_try < max_mail_retry
+                        ):
                             _persist_result(
                                 started_at=mail_attempt_started_at,
                                 email=email,
