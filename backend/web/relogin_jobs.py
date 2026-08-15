@@ -334,6 +334,7 @@ class ReloginJobCoordinator:
             gr.load_config()
             gr._wire_runtime_modules()
             gr._bs.allow_browser_launches()
+            gr._pp.bind_task(scope_key=email, email=email)
             sso = login_with_password(email, password, timeout=100, log_callback=log)
 
             self._set(stage="保存账号文件")
@@ -530,6 +531,10 @@ class ReloginJobCoordinator:
             try:
                 stop_browser(force=True)
             except BaseException:
+                pass
+            try:
+                gr._pp.release_task()
+            except Exception:
                 pass
 
 

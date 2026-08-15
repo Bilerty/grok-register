@@ -367,7 +367,8 @@ def check_cpa(config: dict, http_get: Callable) -> CheckResult:
 
 def run_connectivity_checks(config: dict, http_get: Callable, http_post: Callable) -> List[CheckResult]:
     results = []
-    proxy = resolve_proxy_url(config.get("proxy", ""))
+    from backend.integrations import proxy_pool as _pp
+    proxy = resolve_proxy_url(_pp.current_proxy_url())
     results.append(check_proxy(proxy, http_get))
     results.append(check_xai_signup(proxy, http_get))
     results.append(

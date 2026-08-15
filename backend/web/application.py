@@ -71,6 +71,12 @@ CONFIG_PUBLIC_KEYS = (
     "outlookemail_pick_mode",
     "outlookemail_disable_after_cpa_success",
     "proxy",
+    "proxy_mode",
+    "proxy_selection",
+    "proxy_sticky_scope",
+    "proxy_file",
+    "proxy_username",
+    "proxy_password",
     "enable_nsfw",
     "debug_mode",
     "browser_engine",
@@ -129,6 +135,7 @@ SENSITIVE_HINT_KEYS = {
     "yyds_api_key",
     "yyds_jwt",
     "proxy",
+    "proxy_password",
 }
 
 
@@ -325,11 +332,15 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
     proxy_update: Optional[str] = None
     if "proxy" in updates:
         proxy_update = str(updates.get("proxy") or "").strip()
-        if proxy_update.lower().startswith(("http:", "https:")):
-            try:
-                proxy_update = validate_http_proxy_url(proxy_update)
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=f"网络代理格式错误: {exc}") from exc
+        for line in proxy_update.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.lower().startswith(("http:", "https:")):
+                try:
+                    validate_http_proxy_url(line)
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=f"网络代理格式错误: {exc}") from exc
     changed: List[str] = []
     for key in CONFIG_PUBLIC_KEYS:
         if key not in updates:

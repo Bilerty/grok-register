@@ -65,5 +65,11 @@
   "yyds_jwt": "",
   "yyds_default_domain": "",
   "mailnest_api_key": "",
-  "mailnest_project_code": "x-ai001"
+  "mailnest_project_code": "x-ai001",
+  "proxy_mode": "",
+  "proxy_selection": "round_robin",
+  "proxy_sticky_scope": "task",
+  "proxy_file": "",
+  "proxy_username": "",
+  "proxy_password": ""
 }

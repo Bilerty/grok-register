@@ -45,6 +45,7 @@ from backend.registration import signup_flow as _rf
 from backend.integrations import network_checks as _conn
 from backend.registration.store import RegistrationRepository
 from backend.integrations.proxy import redact_proxy_text, redact_proxy_url, resolve_proxy_url
+from backend.integrations import proxy_pool as _pp
 from backend.shared.paths import DATA_ROOT, PROJECT_ROOT
 from backend.automation.session import (
     browser,
@@ -306,6 +307,18 @@ DEFAULT_CONFIG = {
     "outlookemail_pick_mode": "random",
     "outlookemail_disable_after_cpa_success": False,
     "proxy": "http://127.0.0.1:7890",
+    # 代理模式：static（单代理，默认）/ pool（代理池，proxy 多行或 proxy_file）/
+    # sticky_template（{account}/{email} 占位模板）。留空时按 proxy 内容自动推断。
+    "proxy_mode": "",
+    # 池选择器：round_robin / random / least_used（无健康检测，池质量整体高）
+    "proxy_selection": "round_robin",
+    # 池粘性作用域：task（默认，同一任务同出口）/ account / none
+    "proxy_sticky_scope": "task",
+    # 代理池文件（每行一个 http(s) 代理地址；与 proxy 多行内容合并）
+    "proxy_file": "",
+    # 原始凭据（可选）：无需手工百分号编码，框架统一处理特殊字符
+    "proxy_username": "",
+    "proxy_password": "",
     "enable_nsfw": True,
     "debug_mode": False,
     "browser_engine": _bs.normalize_browser_engine(
@@ -758,7 +771,39 @@ def load_config():
     config["browser_engine"] = _bs.normalize_browser_engine(
         config.get("browser_engine", "camoufox")
     )
+    _configure_proxy_pool()
     return config
+
+
+def _build_proxy_pool_from_config():
+    def file_read(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    return _pp.build_pool_from_config(
+        lambda key, default=None: config.get(key, default),
+        file_read=file_read,
+    )
+
+
+def _configure_proxy_pool():
+    proxy_keys = (
+        "proxy", "proxy_mode", "proxy_selection", "proxy_sticky_scope",
+        "proxy_file", "proxy_username", "proxy_password",
+    )
+
+    def signature():
+        return tuple(str(config.get(key, "") or "") for key in proxy_keys)
+
+    try:
+        _pp.configure_proxy_pool(
+            _build_proxy_pool_from_config, config_signature=signature
+        )
+    except _pp.ProxyConfigError as exc:
+        _pp.configure_proxy_pool(
+            lambda: _pp.ProxyPool(_pp.MODE_STATIC, []), config_signature=signature
+        )
+        print(f"代理池配置错误，回退为空: {exc}")
 
 
 def parse_account_interval() -> float:
@@ -791,6 +836,10 @@ def save_config():
             json.dump(config, f, indent=4, ensure_ascii=False)
     except Exception as e:
         print(f"保存配置失败: {e}")
+    try:
+        _pp.reload_proxy_pool()
+    except _pp.ProxyConfigError as exc:
+        print(f"代理池配置错误: {exc}")
 
 
 load_config()
@@ -804,7 +853,8 @@ DUCKMAIL_API_BASE_DEFAULT = duckmail_provider.API_BASE_DEFAULT
 
 
 def get_proxies():
-    proxy = resolve_proxy_url(config.get("proxy", ""))
+    proxy = _pp.current_proxy_url()
+    proxy = resolve_proxy_url(proxy)
     if proxy:
         return {"http": proxy, "https": proxy}
     return {}
@@ -1225,8 +1275,9 @@ def _normalize_sso_token(raw_token):
 
 
 def _resolve_cpa_proxy():
-    """CPA 换 token 用的代理：优先 config.proxy，其次环境变量，否则直连。"""
-    proxy = resolve_proxy_url(config.get("proxy", ""))
+    """CPA 换 token 用的代理：优先任务作用域代理，其次环境变量，否则直连。"""
+    proxy = _pp.current_proxy_url()
+    proxy = resolve_proxy_url(proxy)
     if proxy:
         return proxy
     for key in ("https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY"):
@@ -2884,6 +2935,7 @@ def run_registration(count):
             local_fail_stats = empty_fail_stats()
             try:
                 boot_started_at = time.time()
+                _pp.bind_task(scope_key=f"w{wid + 1}-t1")
                 try:
                     start_browser(log_callback=lambda m: registration_log(f"[W{wid+1}] {m}"))
                 except Exception as boot_exc:
@@ -2902,11 +2954,13 @@ def run_registration(count):
                                 "status": "not_attempted" if config.get("cpa_auto_add") else "disabled",
                             },
                         )
+                    _pp.release_task()
                     return
                 i = 0
                 retry = 0
                 while i < n and not controller.should_stop():
                     attempt_started_at = time.time()
+                    _pp.bind_task(scope_key=f"w{wid + 1}-t{i + 1}")
                     email = ""
                     profile = {}
                     sso = ""
@@ -3135,6 +3189,7 @@ def run_registration(count):
                         )
                         registration_log(f"[W{wid+1}] [-] 失败 [{FAIL_LABELS.get(kind, kind)}]: {exc}")
                     finally:
+                        _pp.release_task()
                         if i < n and not controller.should_stop():
                             try:
                                 stop_browser()
@@ -3174,9 +3229,11 @@ def run_registration(count):
 
     try:
         boot_started_at = time.time()
+        _pp.bind_task(scope_key="reg-1")
         try:
             start_browser(log_callback=registration_log)
         except Exception as boot_exc:
+            _pp.release_task()
             fail_count += count
             fail_stats[FAIL_BROWSER] = fail_stats.get(FAIL_BROWSER, 0) + count
             registration_log(f"[-] 浏览器启动失败，{count} 个任务均记为失败: {boot_exc}")
@@ -3199,6 +3256,8 @@ def run_registration(count):
                 break
             registration_log(f"--- 开始第 {i + 1}/{count} 个账号 ---")
             attempt_started_at = time.time()
+            scope_key = f"reg-{i + 1}"
+            _pp.bind_task(scope_key=scope_key)
             email = ""
             profile = {}
             sso = ""
@@ -3469,6 +3528,7 @@ def run_registration(count):
                 )
                 registration_log(f"[-] 注册失败 [{FAIL_LABELS.get(kind, kind)}]: {exc}")
             finally:
+                _pp.release_task()
                 if controller.should_stop():
                     break
                 # 每轮结束只关浏览器，不立刻再开。

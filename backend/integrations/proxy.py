@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import re
-from urllib.parse import unquote, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 
 LOCAL_PROXY_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
@@ -128,6 +128,36 @@ def redact_proxy_text(value: object) -> str:
     return _AUTHENTICATED_PROXY_IN_TEXT.sub(
         r"\1***:***@", str(value if value is not None else "")
     )
+
+
+def build_proxy_url_with_credentials(proxy_url: str, username: str = "", password: str = "") -> str:
+    """以原始（未编码）凭据重建代理 URL 的 userinfo。
+
+    配置里单独提供 ``proxy_username`` / ``proxy_password`` 时使用，调用方无需手工
+    百分号编码；特殊字符由本函数统一 quote。传入空字符串表示不使用该字段覆盖。
+    """
+    value = str(proxy_url or "").strip()
+    if not value:
+        return ""
+    has_scheme = "://" in value
+    parsed = urlsplit(value if has_scheme else f"http://{value}")
+    if not parsed.hostname:
+        return value
+
+    user = str(username or "")
+    password_value = str(password or "")
+    if user == "" and password_value == "":
+        return value
+
+    netloc = _proxy_host_port(parsed)
+    if user:
+        userinfo = quote(user, safe="")
+        if password_value:
+            userinfo += ":" + quote(password_value, safe="")
+        netloc = f"{userinfo}@{netloc}"
+
+    resolved = urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+    return resolved if has_scheme else resolved.split("://", 1)[1]
 
 
 def resolve_proxy_url(proxy_url: str) -> str:

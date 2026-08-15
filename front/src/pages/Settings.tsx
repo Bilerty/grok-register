@@ -405,7 +405,50 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
               field="proxy"
               type="password"
               placeholder="http://user:password@host:port"
-              helper="支持无认证或用户名/密码认证的 HTTP(S) 代理；凭据含 @、:、/、#、% 等特殊字符时请使用 URL 百分号编码，例如 @ 写成 %40。注册浏览器与 xAI/OAuth 请求会共用此代理。"
+              helper="单代理：一个 http(s) 地址；代理池：每行一个地址（proxy_mode=pool）；粘性模板：地址含 {account} 或 {email} 占位符（proxy_mode=sticky_template）。含特殊字符的凭据建议改用下方「代理用户名/密码」原始配置，无需手工编码。"
+            />
+            <ConfigField
+              {...fieldState}
+              label="代理模式"
+              field="proxy_mode"
+              placeholder="static / pool / sticky_template"
+              helper="留空自动推断：多行为 pool，含占位符为 sticky_template，否则 static。"
+            />
+            <ConfigField
+              {...fieldState}
+              label="池选择器"
+              field="proxy_selection"
+              placeholder="round_robin / random / least_used"
+              helper="代理池分配策略；池质量整体较高，不做健康检测与冷却。"
+            />
+            <ConfigField
+              {...fieldState}
+              label="池粘性作用域"
+              field="proxy_sticky_scope"
+              placeholder="task / account / none"
+              helper="同一任务或账号在注册、SSO、OAuth 全链路使用同一出口。"
+            />
+            <ConfigField
+              {...fieldState}
+              label="代理池文件"
+              field="proxy_file"
+              placeholder="data/proxies.txt（可选）"
+              helper="每行一个 http(s) 代理地址，与 proxy 多行内容合并。"
+            />
+            <ConfigField
+              {...fieldState}
+              label="代理用户名"
+              field="proxy_username"
+              placeholder="可选，原样填写"
+              helper="覆盖代理地址中的用户名；特殊字符无需百分号编码。"
+            />
+            <ConfigField
+              {...fieldState}
+              label="代理密码"
+              field="proxy_password"
+              type="password"
+              placeholder="可选，原样填写"
+              helper="覆盖代理地址中的密码；特殊字符无需百分号编码。"
             />
             <ConfigField {...fieldState}
               label="账号间隔（秒）"
