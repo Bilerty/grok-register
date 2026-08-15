@@ -194,6 +194,38 @@ function ConfigField({
   );
 }
 
+function ConfigSelect({
+  config,
+  onFieldChange,
+  label,
+  field,
+  options,
+  helper = "",
+}: {
+  config: Record<string, any>;
+  onFieldChange: (key: string, value: any) => void;
+  label: string;
+  field: string;
+  options: { value: string; label: string }[];
+  helper?: string;
+}) {
+  return (
+    <div className="min-w-0 space-y-2">
+      <Label htmlFor={field}>{label}</Label>
+      <Select
+        id={field}
+        value={config[field] ?? ""}
+        onChange={(event) => onFieldChange(field, event.target.value)}
+      >
+        {options.map((item) => (
+          <option key={item.value} value={item.value}>{item.label}</option>
+        ))}
+      </Select>
+      {helper ? <p className="text-xs leading-5 text-muted-foreground">{helper}</p> : null}
+    </div>
+  );
+}
+
 function HelpRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="grid gap-0.5 sm:grid-cols-[9rem_1fr] sm:gap-3">
@@ -413,25 +445,38 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
               placeholder="http://user:password@host:port"
               helper="单代理：一个 http(s) 地址；代理池：每行一个地址（proxy_mode=pool）；粘性模板：地址含 {account} 或 {email} 占位符（proxy_mode=sticky_template）。含特殊字符的凭据建议改用下方「代理用户名/密码」原始配置，无需手工编码。"
             />
-            <ConfigField
+            <ConfigSelect
               {...fieldState}
               label="代理模式"
               field="proxy_mode"
-              placeholder="static / pool / sticky_template"
-              helper="留空自动推断：多行为 pool，含占位符为 sticky_template，否则 static。"
+              options={[
+                { value: "", label: "自动推断（推荐）" },
+                { value: "static", label: "static · 单代理" },
+                { value: "pool", label: "pool · 代理池" },
+                { value: "sticky_template", label: "sticky_template · 粘性模板" },
+              ]}
+              helper="留空自动推断：多行为 pool，含 {account}/{email} 占位符为 sticky_template，否则 static。"
             />
-            <ConfigField
+            <ConfigSelect
               {...fieldState}
               label="池选择器"
               field="proxy_selection"
-              placeholder="round_robin / random / least_used"
+              options={[
+                { value: "round_robin", label: "round_robin · 轮询" },
+                { value: "random", label: "random · 随机" },
+                { value: "least_used", label: "least_used · 最少使用" },
+              ]}
               helper="代理池分配策略；选择时对节点实时探测，不可达/冷却中的节点自动排除不参与调度。"
             />
-            <ConfigField
+            <ConfigSelect
               {...fieldState}
               label="池粘性作用域"
               field="proxy_sticky_scope"
-              placeholder="task / account / none"
+              options={[
+                { value: "task", label: "task · 同任务同出口（默认）" },
+                { value: "account", label: "account · 按账号" },
+                { value: "none", label: "none · 不粘性" },
+              ]}
               helper="同一任务或账号在注册、SSO、OAuth 全链路使用同一出口。"
             />
             <ConfigField
