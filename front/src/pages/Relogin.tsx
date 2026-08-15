@@ -1,14 +1,31 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { CheckCircle2, History, ListChecks, Loader2, RefreshCcw, Search, ShieldAlert, X, XCircle } from "lucide-react";
-import { AccountEmailLabel } from "@/components/AccountEmailIcon";
+import { AccountEmailLabel, EmailProviderIcon, EmailProviderLabel } from "@/components/AccountEmailIcon";
 import { AccountPageContext } from "@/components/AccountPageContext";
+import { AccountFilterBar, AccountSelectionToolbar } from "@/components/AccountTableToolbar";
 import { reloginSsoCheckLabel } from "@/components/ReloginReportDialog";
 import { Badge, Button, Card, EmptyState, Input, PageHeader, PaginationBar, Select, Toast } from "@/components/ui";
 import { api, type AccountRecord, type ReloginItem, type ReloginStatus } from "@/lib/api";
 import { appendReloginHistory } from "@/lib/reloginHistory";
 
 const RELOGIN_RESULT_PAGE_SIZE = 20;
+
+function accountRiskStatus(item: AccountRecord) {
+  if (item.bot_risk) return { label: "异常", variant: "destructive" as const };
+  const source = item.sso_risk_check?.bot_flag_source;
+  if (source === 0 || source === "0") return { label: "正常", variant: "success" as const };
+  if (item.sso_risk_check) return { label: "未知", variant: "warning" as const };
+  return { label: "未检查", variant: "secondary" as const };
+}
+
+function reloginOutcome(item: AccountRecord) {
+  if (!item.email || !item.password) return { label: "缺少凭据", variant: "warning" as const };
+  const value = String(item.extra?.relogin_status || "");
+  if (value === "success") return { label: "重登成功", variant: "success" as const };
+  if (value) return { label: value, variant: "warning" as const };
+  return { label: "未执行", variant: "secondary" as const };
+}
 
 function ReloginResultList({
   items,
@@ -366,31 +383,37 @@ export function ReloginPage() {
       ) : null}
 
       <Card className="overflow-hidden">
-        <div className="border-b border-slate-200 p-4 sm:p-5">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <h2 className="font-semibold text-slate-950">选择账号</h2>
-              <p className="mt-1 text-xs text-slate-500">共 {total} 个账号；缺少邮箱或密码的记录会显示但不可选择。</p>
-            </div>
-            <div className="grid gap-2 sm:grid-cols-[150px_minmax(220px,1fr)_auto]">
-              <Select value={riskFilter} onChange={(event) => { setRiskFilter(event.target.value); setSelected({}); }} aria-label="按账号风控状态筛选">
+        <AccountFilterBar>
+            <div className="w-full sm:w-48">
+              <label htmlFor="relogin-risk-filter" className="mb-1.5 block text-xs font-medium text-slate-500">风控状态</label>
+              <Select id="relogin-risk-filter" value={riskFilter} onChange={(event) => { setRiskFilter(event.target.value); setSelected({}); }} aria-label="按账号风控状态筛选">
                 <option value="">全部账号</option>
                 <option value="0">正常账号</option>
                 <option value="1">异常账号</option>
                 <option value="unknown">未检查 / 未知</option>
               </Select>
-              <div className="relative min-w-0 sm:w-72">
-                <Search className="pointer-events-none absolute left-3 top-3.5 h-4 w-4 text-slate-400" aria-hidden="true" />
-                <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索邮箱或服务商" className="pl-9" />
-              </div>
-              <Button onClick={() => void start()} disabled={!selectedIds.length || starting || !!status?.running || ssoCheckRunning}>
-                {starting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <RefreshCcw className="h-4 w-4" aria-hidden="true" />}
-                重新登录 {selectedIds.length ? `(${selectedIds.length})` : ""}
-              </Button>
             </div>
-            {ssoCheckRunning ? <p className="text-xs text-amber-700 lg:text-right">SSO 风控检查正在运行，完成后可启动重新登录。</p> : null}
-          </div>
-        </div>
+              <div className="w-full sm:w-80">
+                <label htmlFor="relogin-search" className="mb-1.5 block text-xs font-medium text-slate-500">搜索账号</label>
+                <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+                <Input id="relogin-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索邮箱或服务商" className="pl-9" />
+                </div>
+            </div>
+        </AccountFilterBar>
+        <AccountSelectionToolbar
+          allVisibleSelected={allSelected}
+          selectableCount={eligibleCandidates.length}
+          selectedCount={selectedIds.length}
+          total={total}
+          loading={loading}
+          selectingAll={selectingAll}
+          onTogglePage={(checked) => setSelected((previous) => { const next = { ...previous }; for (const item of eligibleCandidates) checked ? (next[item.id] = true) : delete next[item.id]; return next; })}
+          onSelectAll={() => void selectAllMatchingAccounts()}
+          onClear={() => setSelected({})}
+          actions={<Button size="sm" onClick={() => void start()} disabled={!selectedIds.length || starting || !!status?.running || ssoCheckRunning}>{starting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <RefreshCcw className="h-4 w-4" aria-hidden="true" />}重新登录</Button>}
+        />
+        {ssoCheckRunning ? <p className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-700 sm:px-5">SSO 风控检查正在运行，完成后可启动重新登录。</p> : null}
 
         {loading ? (
           <div className="flex min-h-52 items-center justify-center text-sm text-slate-500">
@@ -398,41 +421,17 @@ export function ReloginPage() {
           </div>
         ) : candidates.length ? (
           <>
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-4 py-2.5 text-xs font-medium text-slate-600">
-              <label className="flex min-h-9 cursor-pointer items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={allSelected}
-                  onChange={(event) => {
-                    const checked = event.target.checked;
-                    setSelected((previous) => {
-                      const next = { ...previous };
-                      for (const item of eligibleCandidates) checked ? (next[item.id] = true) : delete next[item.id];
-                      return next;
-                    });
-                  }}
-                />
-                选择本页
-              </label>
-              <div className="flex items-center gap-2">
-                <span>已选 {selectedIds.length}</span>
-                <Button size="sm" variant="ghost" disabled={selectingAll || !total} onClick={() => void selectAllMatchingAccounts()}>
-                  {selectingAll ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
-                  选择全部结果
-                </Button>
-                {selectedIds.length ? <Button size="sm" variant="ghost" onClick={() => setSelected({})}>取消</Button> : null}
-              </div>
-            </div>
             <div className="hidden overflow-x-auto md:block">
-              <table className="w-full min-w-[760px] text-left text-sm">
+              <table className="w-full min-w-[920px] text-left text-sm">
                 <thead className="border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
                   <tr>
                     <th className="w-12 px-4 py-3"><span className="sr-only">选择账号</span></th>
                     <th className="px-4 py-3 font-medium">账号</th>
-                    <th className="px-4 py-3 font-medium">服务商</th>
-                    <th className="px-4 py-3 font-medium">CPA</th>
-                    <th className="px-4 py-3 font-medium">Grok2API</th>
-                    <th className="px-4 py-3 font-medium">最近状态</th>
+                    <th className="px-4 py-3 font-medium">邮箱来源</th>
+                    <th className="px-4 py-3 font-medium">登录凭据</th>
+                    <th className="px-4 py-3 font-medium">SSO 风控</th>
+                    <th className="px-4 py-3 font-medium">授权文件</th>
+                    <th className="px-4 py-3 font-medium">最近结果</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -445,19 +444,12 @@ export function ReloginPage() {
                           botRisk={!!item.bot_risk}
                           emailClassName="text-sm text-slate-900"
                         />
-                        {item.bot_risk ? (
-                          <div className="mt-1">
-                            <Badge variant="warning">
-                              <ShieldAlert className="mr-1 h-3 w-3" aria-hidden="true" />
-                              风控标记
-                            </Badge>
-                          </div>
-                        ) : null}
                       </td>
-                      <td className="px-4 py-3 text-slate-500">{item.provider || "-"}</td>
-                      <td className="px-4 py-3"><Badge variant={item.cpa_auth_available ? "success" : "secondary"}>{item.cpa_auth_available ? "已生成" : "无文件"}</Badge></td>
-                      <td className="px-4 py-3"><Badge variant={item.grok2api_auth_available ? "success" : "secondary"}>{item.grok2api_auth_available ? "已生成" : "无文件"}</Badge></td>
-                      <td className="px-4 py-3 text-slate-500">{!item.email || !item.password ? "缺少登录凭据" : item.extra?.relogin_status === "success" ? "重登成功" : item.extra?.relogin_status ? String(item.extra.relogin_status) : "未重登"}</td>
+                      <td className="px-4 py-3"><EmailProviderLabel provider={item.provider} /></td>
+                      <td className="px-4 py-3"><Badge variant={item.email && item.password ? "success" : "warning"}>{item.email && item.password ? "有效" : "缺失"}</Badge></td>
+                      {(() => { const risk = accountRiskStatus(item); return <td className="px-4 py-3"><Badge variant={risk.variant}>{risk.label}</Badge></td>; })()}
+                      <td className="px-4 py-3"><div className="flex flex-wrap gap-1.5"><Badge variant={item.cpa_auth_available ? "success" : "secondary"}>CPA {item.cpa_auth_available ? "有效" : "缺失"}</Badge><Badge variant={item.grok2api_auth_available ? "success" : "secondary"}>G2A {item.grok2api_auth_available ? "有效" : "缺失"}</Badge></div></td>
+                      {(() => { const outcome = reloginOutcome(item); return <td className="px-4 py-3"><Badge variant={outcome.variant}>{outcome.label}</Badge></td>; })()}
                     </tr>
                   ))}
                 </tbody>
@@ -468,23 +460,17 @@ export function ReloginPage() {
                 <label key={item.id} className={`flex items-start gap-3 p-4 ${!item.email || !item.password ? "opacity-60" : ""}`}>
                   <input type="checkbox" className="mt-1" disabled={!item.email || !item.password} checked={!!selected[item.id]} onChange={(event) => setSelected((old) => ({ ...old, [item.id]: event.target.checked }))} />
                   <div className="min-w-0 flex-1">
-                    <AccountEmailLabel
-                      email={item.email}
-                      botRisk={!!item.bot_risk}
-                      emailClassName="text-sm text-slate-900"
-                    />
-                    <div className="mt-1 text-xs text-slate-500">{item.provider || "未知服务商"}</div>
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {!item.email || !item.password ? <Badge variant="warning">缺少凭据</Badge> : null}
-                      {item.bot_risk ? (
-                        <Badge variant="warning">
-                          <ShieldAlert className="mr-1 h-3 w-3" aria-hidden="true" />
-                          风控标记
-                        </Badge>
-                      ) : null}
-                      {item.cpa_auth_available ? <Badge variant="success">CPA</Badge> : null}
-                      {item.grok2api_auth_available ? <Badge variant="success">Grok2API</Badge> : null}
+                    <div className="flex items-start gap-2">
+                      <AccountEmailLabel
+                        email={item.email}
+                        botRisk={!!item.bot_risk}
+                        className="min-w-0 flex-1"
+                        emailClassName="text-sm text-slate-900"
+                      />
+                      <EmailProviderIcon provider={item.provider} />
                     </div>
+                    <div className="mt-2 grid grid-cols-2 gap-2 text-xs"><div className="rounded-lg bg-slate-50 px-3 py-2"><div className="text-slate-400">登录凭据</div><div className="mt-1"><Badge variant={item.email && item.password ? "success" : "warning"}>{item.email && item.password ? "有效" : "缺失"}</Badge></div></div><div className="rounded-lg bg-slate-50 px-3 py-2"><div className="text-slate-400">SSO 风控</div><div className="mt-1"><Badge variant={accountRiskStatus(item).variant}>{accountRiskStatus(item).label}</Badge></div></div></div>
+                    <div className="flex flex-wrap gap-1.5"><Badge variant={item.cpa_auth_available ? "success" : "secondary"}>CPA {item.cpa_auth_available ? "有效" : "缺失"}</Badge><Badge variant={item.grok2api_auth_available ? "success" : "secondary"}>G2A {item.grok2api_auth_available ? "有效" : "缺失"}</Badge><Badge variant={reloginOutcome(item).variant}>{reloginOutcome(item).label}</Badge></div>
                   </div>
                 </label>
               ))}

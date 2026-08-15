@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { Archive, Copy, Download, Loader2, Search, ShieldAlert, UploadCloud } from "lucide-react";
-import { AccountEmailLabel } from "@/components/AccountEmailIcon";
+import { Archive, Copy, Download, Loader2, Search, UploadCloud } from "lucide-react";
+import { AccountEmailLabel, EmailProviderIcon, EmailProviderLabel } from "@/components/AccountEmailIcon";
 import { AccountPageContext } from "@/components/AccountPageContext";
+import { AccountFilterBar, AccountSelectionToolbar } from "@/components/AccountTableToolbar";
 import { Badge, Button, Card, EmptyState, Input, PageHeader, PaginationBar, Select, Toast } from "@/components/ui";
 import { api, type AccountRecord, type AuthKind } from "@/lib/api";
 import { copyText } from "@/lib/utils";
@@ -133,12 +134,6 @@ export function CredentialsPage() {
       <PageHeader
         title="授权文件"
         description="集中查看、复制和导出 CPA 与 Grok2API 授权文件，减少账号列表中的操作负担。"
-        actions={
-          <Button onClick={() => void batchDownload()} disabled={!selectedIds.length || !!busy}>
-            {busy === "download" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Archive className="h-4 w-4" />}
-            批量导出 {selectedIds.length ? `(${selectedIds.length})` : ""}
-          </Button>
-        }
       />
 
       <section className="grid gap-3 sm:grid-cols-3">
@@ -155,9 +150,8 @@ export function CredentialsPage() {
       </section>
 
       <Card className="overflow-hidden">
-        <div className="border-b border-slate-200 p-4 sm:p-5">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div className="sm:w-56">
+        <AccountFilterBar>
+            <div className="w-full sm:w-56">
               <label htmlFor="credential-kind" className="mb-1.5 block text-xs font-medium text-slate-500">文件类型</label>
               <Select
                 id="credential-kind"
@@ -169,77 +163,83 @@ export function CredentialsPage() {
                 <option value="sso">SSO</option>
               </Select>
             </div>
-            <div className="relative sm:w-80">
-              <Search className="pointer-events-none absolute left-3 top-3.5 h-4 w-4 text-slate-400" />
-              <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索邮箱" className="pl-9" />
+            <div className="w-full sm:w-80">
+              <label htmlFor="credential-search" className="mb-1.5 block text-xs font-medium text-slate-500">搜索账号</label>
+              <div className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" /><Input id="credential-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索邮箱" className="pl-9" /></div>
             </div>
-            <div className="flex flex-wrap items-center gap-2 text-sm text-slate-600">
-              <label className="flex min-h-10 cursor-pointer items-center gap-2">
-                <input type="checkbox" disabled={!selectableItems.length} checked={allVisibleSelected} onChange={(event) => toggleAllVisible(event.target.checked)} aria-label="全选本页可用授权文件" />
-                全选本页
-              </label>
-              <Button size="sm" variant="ghost" disabled={selectingAll || !total} onClick={() => void selectAllAvailable()}>
-                {selectingAll ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                选择全部结果
-              </Button>
-              {selectedIds.length ? <Button size="sm" variant="ghost" onClick={() => setSelected({})}>取消</Button> : null}
-            </div>
-          </div>
-        </div>
+        </AccountFilterBar>
+        <AccountSelectionToolbar
+          allVisibleSelected={allVisibleSelected}
+          selectableCount={selectableItems.length}
+          selectedCount={selectedIds.length}
+          total={total}
+          loading={loading}
+          selectingAll={selectingAll}
+          onTogglePage={toggleAllVisible}
+          onSelectAll={() => void selectAllAvailable()}
+          onClear={() => setSelected({})}
+          actions={<Button size="sm" onClick={() => void batchDownload()} disabled={!selectedIds.length || !!busy}>{busy === "download" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Archive className="h-4 w-4" />}批量导出</Button>}
+        />
 
         {loading ? (
           <div className="flex min-h-52 items-center justify-center text-sm text-slate-500"><Loader2 className="mr-2 h-4 w-4 animate-spin" />加载授权文件</div>
         ) : filtered.length ? (
-          <div className="divide-y divide-slate-100">
-            {filtered.map((item) => {
-              const available = isAvailable(item);
-              const path = tab === "cpa" ? item.cpa_auth_path : tab === "grok2api" ? item.grok2api_auth_path : item.account_file;
-              const remoteStatus = tab === "cpa" ? item.cpa_remote_status : tab === "grok2api" ? item.grok2api_remote_status : "";
-              return (
-                <div key={item.id} className="flex flex-col gap-3 px-4 py-4 sm:px-5 lg:flex-row lg:items-center">
-                  <div className="flex min-w-0 flex-1 items-start gap-3">
-                    <input type="checkbox" className="mt-1" disabled={!available} checked={!!selected[item.id]} onChange={(event) => setSelected((old) => ({ ...old, [item.id]: event.target.checked }))} />
-                    <div className="min-w-0">
-                      <AccountEmailLabel
-                        email={item.email}
-                        botRisk={!!item.bot_risk}
-                        emailClassName="text-sm text-slate-950"
-                      />
-                      <div className="mt-1 truncate text-xs text-slate-500" title={path}>{path || (tab === "sso" ? "未找到 data/accounts 账号文件" : "未生成本地文件")}</div>
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        <Badge variant={available ? "success" : "secondary"}>{available ? "文件可用" : "无文件"}</Badge>
-                        {item.bot_risk ? (
-                          <Badge variant="warning">
-                            <ShieldAlert className="mr-1 h-3 w-3" aria-hidden="true" />
-                            风控标记
-                          </Badge>
-                        ) : null}
-                        {remoteStatus && remoteStatus !== "not_configured" ? <Badge variant={remoteStatus === "success" ? "success" : remoteStatus === "failed" ? "destructive" : "warning"}>远程 {remoteStatus}</Badge> : null}
-                      </div>
-                    </div>
+          <>
+            <div className="hidden overflow-x-auto md:block">
+              <table className="w-full min-w-[980px] text-left text-sm">
+                <thead className="border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
+                  <tr>
+                    <th className="w-12 px-4 py-3"><span className="sr-only">选择文件</span></th>
+                    <th className="px-4 py-3 font-medium">账号</th>
+                    <th className="px-4 py-3 font-medium">邮箱来源</th>
+                    <th className="px-4 py-3 font-medium">文件状态</th>
+                    <th className="px-4 py-3 font-medium">远程状态</th>
+                    <th className="px-4 py-3 font-medium">文件路径</th>
+                    <th className="px-4 py-3 text-right font-medium">操作</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filtered.map((item) => {
+                    const available = isAvailable(item);
+                    const path = tab === "cpa" ? item.cpa_auth_path : tab === "grok2api" ? item.grok2api_auth_path : item.account_file;
+                    const remoteStatus = tab === "cpa" ? item.cpa_remote_status : tab === "grok2api" ? item.grok2api_remote_status : "";
+                    const remoteLabel = remoteStatus === "success" ? "已导入" : remoteStatus === "failed" ? "失败" : remoteStatus === "partial" ? "同步异常" : remoteStatus === "ready" ? "待导入" : remoteStatus === "not_configured" ? "未配置" : "—";
+                    return (
+                      <tr key={item.id} className="hover:bg-slate-50/70">
+                        <td className="px-4 py-3"><input type="checkbox" disabled={!available} checked={!!selected[item.id]} onChange={(event) => setSelected((old) => ({ ...old, [item.id]: event.target.checked }))} /></td>
+                        <td className="max-w-[250px] px-4 py-3">
+                          <AccountEmailLabel email={item.email} botRisk={!!item.bot_risk} emailClassName="text-sm text-slate-950" />
+                        </td>
+                        <td className="px-4 py-3"><EmailProviderLabel provider={item.provider} /></td>
+                        <td className="px-4 py-3"><Badge variant={available ? "success" : "secondary"}>{available ? "有效" : "缺失"}</Badge></td>
+                        <td className="px-4 py-3">{tab === "sso" ? <span className="text-slate-400">—</span> : <Badge variant={remoteStatus === "success" ? "success" : remoteStatus === "failed" ? "destructive" : remoteStatus === "not_configured" || !remoteStatus ? "secondary" : "warning"}>{remoteLabel}</Badge>}</td>
+                        <td className="max-w-[300px] px-4 py-3"><span className="block truncate text-xs text-slate-500" title={path}>{path || (tab === "sso" ? "未找到账号文件" : "未生成本地文件")}</span></td>
+                        <td className="px-4 py-3"><div className="flex justify-end gap-1.5">
+                          <Button variant="outline" size="sm" disabled={!available || !!busy} onClick={() => void copyJson(item)}>{busy === `copy-${item.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <Copy className="h-4 w-4" />}复制</Button>
+                          <a href={available ? api.accountAuthDownloadUrl(item.id, tab) : undefined} download aria-disabled={!available} className={`inline-flex min-h-9 items-center justify-center gap-2 rounded-lg border border-slate-200 px-3 text-xs font-medium ${available ? "bg-white text-slate-700 hover:bg-slate-50" : "pointer-events-none bg-slate-50 text-slate-300"}`}><Download className="h-4 w-4" />下载</a>
+                          {tab === "grok2api" && item.grok2api_remote_configured ? <Button variant="outline" size="sm" disabled={!available || !!busy} onClick={() => void importGrok2API(item)}>{busy === `import-${item.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}导入</Button> : null}
+                        </div></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="divide-y divide-slate-100 md:hidden">
+              {filtered.map((item) => {
+                const available = isAvailable(item);
+                const path = tab === "cpa" ? item.cpa_auth_path : tab === "grok2api" ? item.grok2api_auth_path : item.account_file;
+                const remoteStatus = tab === "cpa" ? item.cpa_remote_status : tab === "grok2api" ? item.grok2api_remote_status : "";
+                return (
+                  <div key={item.id} className="space-y-3 p-4">
+                    <div className="flex items-start gap-3"><input type="checkbox" className="mt-1" disabled={!available} checked={!!selected[item.id]} onChange={(event) => setSelected((old) => ({ ...old, [item.id]: event.target.checked }))} /><div className="flex min-w-0 flex-1 items-start gap-2"><AccountEmailLabel email={item.email} botRisk={!!item.bot_risk} className="min-w-0 flex-1" emailClassName="text-sm text-slate-950" /><EmailProviderIcon provider={item.provider} /></div><Badge variant={available ? "success" : "secondary"}>{available ? "有效" : "缺失"}</Badge></div>
+                    <div className="grid grid-cols-2 gap-2 text-xs"><div className="rounded-lg bg-slate-50 px-3 py-2"><div className="text-slate-400">文件路径</div><div className="mt-1 truncate text-slate-700" title={path}>{path || "未生成"}</div></div><div className="rounded-lg bg-slate-50 px-3 py-2"><div className="text-slate-400">远程状态</div><div className="mt-1 text-slate-700">{tab === "sso" ? "—" : remoteStatus || "未配置"}</div></div></div>
+                    <div className="grid grid-cols-2 gap-2"><Button variant="outline" size="sm" disabled={!available || !!busy} onClick={() => void copyJson(item)}>{busy === `copy-${item.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <Copy className="h-4 w-4" />}复制</Button><a href={available ? api.accountAuthDownloadUrl(item.id, tab) : undefined} download aria-disabled={!available} className={`inline-flex min-h-9 items-center justify-center gap-2 rounded-lg border border-slate-200 px-3 text-xs font-medium ${available ? "bg-white text-slate-700 hover:bg-slate-50" : "pointer-events-none bg-slate-50 text-slate-300"}`}><Download className="h-4 w-4" />下载</a>{tab === "grok2api" && item.grok2api_remote_configured ? <Button variant="outline" size="sm" className="col-span-2" disabled={!available || !!busy} onClick={() => void importGrok2API(item)}>{busy === `import-${item.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}导入远程</Button> : null}</div>
                   </div>
-                  <div className="grid grid-cols-2 gap-2 sm:flex">
-                    <Button variant="outline" size="sm" disabled={!available || !!busy} onClick={() => void copyJson(item)}>
-                      {busy === `copy-${item.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <Copy className="h-4 w-4" />}复制
-                    </Button>
-                    <a
-                      href={available ? api.accountAuthDownloadUrl(item.id, tab) : undefined}
-                      download
-                      aria-disabled={!available}
-                      className={`inline-flex min-h-9 items-center justify-center gap-2 rounded-lg border border-slate-200 px-3 text-xs font-medium ${available ? "bg-white text-slate-700 hover:bg-slate-50" : "pointer-events-none bg-slate-50 text-slate-300"}`}
-                    >
-                      <Download className="h-4 w-4" />下载
-                    </a>
-                    {tab === "grok2api" && item.grok2api_remote_configured ? (
-                      <Button variant="outline" size="sm" className="col-span-2" disabled={!available || !!busy} onClick={() => void importGrok2API(item)}>
-                        {busy === `import-${item.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}导入远程
-                      </Button>
-                    ) : null}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          </>
         ) : (
           <div className="p-4"><EmptyState title="暂无授权文件" description="账号完成 SSO → Auth 后会在这里显示对应文件。" /></div>
         )}

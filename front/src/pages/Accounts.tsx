@@ -11,7 +11,6 @@ import {
   Database,
   Download,
   Eye,
-  ListChecks,
   Loader2,
   LogIn,
   UploadCloud,
@@ -24,7 +23,8 @@ import {
   X,
 } from "lucide-react";
 import { AccountBatchActions } from "@/components/AccountBatchActions";
-import { AccountEmailIcon } from "@/components/AccountEmailIcon";
+import { AccountEmailIcon, EmailProviderLabel, emailProviderLabel } from "@/components/AccountEmailIcon";
+import { AccountFilterBar, AccountSelectionToolbar } from "@/components/AccountTableToolbar";
 import { api, type AccountRecord, type ReloginStatus } from "@/lib/api";
 import { appendReloginHistory } from "@/lib/reloginHistory";
 import { cn, copyText, formatDuration, maskSecret } from "@/lib/utils";
@@ -386,7 +386,7 @@ function AccountDetails({
     ["状态", detail.status],
     ["风控标记", detail.bot_risk ? "是（该账号被打上机器人标记）" : "否"],
     ["CPA", detail.cpa_status],
-    ["服务商", detail.provider],
+    ["邮箱来源", emailProviderLabel(detail.provider)],
     ["NSFW", detail.nsfw_status],
     ["账号文件", detail.account_file],
     ["Auth 路径", detail.auth_path],
@@ -1216,31 +1216,6 @@ export function AccountsPage() {
       <PageHeader
         title="账号管理"
         description="集中筛选账号、查看注册与授权状态；选中账号后可批量风控检查、重新登录、导出或删除。"
-        actions={
-          <>
-            <Button variant="outline" onClick={() => void load(page, pageSize)} disabled={loading}>
-              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} aria-hidden="true" />
-              刷新
-            </Button>
-            <AccountBatchActions
-              selectedCount={selectedIds.length}
-              busy={!!batchBusy}
-              menuOpen={batchMenuOpen}
-              reloginRunning={!!relogin?.running}
-              ssoCheckRunning={ssoCheckRunning || batchBusy === "sso-check"}
-              taskConflict={!!relogin?.running || ssoCheckRunning}
-              onToggleMenu={() => setBatchMenuOpen((open) => !open)}
-              onCloseMenu={() => setBatchMenuOpen(false)}
-              onExport={(kind) => void onBatchExport(kind)}
-              onRelogin={() => void onBatchRelogin()}
-              onSsoCheck={() => void onBatchSsoCheck()}
-              onDelete={() => {
-                setBatchMenuOpen(false);
-                openDeleteDialog(selectedIds);
-              }}
-            />
-          </>
-        }
       />
 
       {relogin?.running ? (
@@ -1289,27 +1264,11 @@ export function AccountsPage() {
           <Link to="/accounts" className="ml-3 text-sky-700 underline-offset-2 hover:underline">清除</Link>
         </div>
       ) : null}
-      {selectedIds.length ? (
-        <div className="flex flex-col gap-2 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            已选择 <strong className="tabular-nums">{selectedIds.length}</strong> 个账号
-            {selectedIds.length === total && total > items.length ? "（当前筛选结果全部）" : allVisibleSelected ? "（当前页全部）" : ""}
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {selectedIds.length < total ? (
-              <Button size="sm" variant="outline" disabled={selectingAll || loading} onClick={() => void selectAllFiltered()}>
-                {selectingAll ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <ListChecks className="h-4 w-4" aria-hidden="true" />}
-                选择全部 {total} 条
-              </Button>
-            ) : null}
-            <Button size="sm" variant="ghost" onClick={clearSelection}>取消选择</Button>
-          </div>
-        </div>
-      ) : null}
-      <Card>
-        <CardContent className="space-y-3 p-4">
-          <div className="grid gap-3 sm:grid-cols-3">
+      <Card className="overflow-hidden">
+        <AccountFilterBar actions={<Button onClick={() => { setSelected({}); void load(1, pageSize); }} disabled={loading}><Search className="h-4 w-4" aria-hidden="true" />查询</Button>}>
+            <div className="w-full sm:w-44"><label htmlFor="account-status-filter" className="mb-1.5 block text-xs font-medium text-slate-500">注册状态</label>
             <Select
+              id="account-status-filter"
               value={status}
               onChange={(e) => {
                 setStatus(e.target.value);
@@ -1323,7 +1282,10 @@ export function AccountsPage() {
               <option value="skipped">skipped</option>
               <option value="cancelled">cancelled</option>
             </Select>
+            </div>
+            <div className="w-full sm:w-48"><label htmlFor="account-email-status-filter" className="mb-1.5 block text-xs font-medium text-slate-500">邮箱状态</label>
             <Select
+              id="account-email-status-filter"
               value={emailDisableStatus}
               onChange={(e) => {
                 setEmailDisableStatus(e.target.value);
@@ -1340,7 +1302,10 @@ export function AccountsPage() {
               <option value="not_attempted">未执行</option>
               <option value="not_applicable">不适用</option>
             </Select>
+            </div>
+            <div className="w-full sm:w-44"><label htmlFor="account-risk-filter" className="mb-1.5 block text-xs font-medium text-slate-500">风控状态</label>
             <Select
+              id="account-risk-filter"
               value={botRiskFilter}
               onChange={(e) => {
                 setBotRiskFilter(e.target.value);
@@ -1353,11 +1318,11 @@ export function AccountsPage() {
               <option value="0">正常账号</option>
               <option value="unknown">未检查 / 未知</option>
             </Select>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
-            <div className="relative min-w-0">
+            </div>
+            <div className="w-full min-w-0 sm:min-w-72 sm:flex-1"><label htmlFor="account-search" className="mb-1.5 block text-xs font-medium text-slate-500">搜索账号</label><div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
               <Input
+                id="account-search"
                 className="pl-9"
                 type="search"
                 placeholder="搜索邮箱、服务商、失败原因或 Batch"
@@ -1375,23 +1340,13 @@ export function AccountsPage() {
                 aria-label="搜索账号记录"
               />
             </div>
-            <Button
-              onClick={() => {
-                setSelected({});
-                void load(1, pageSize);
-              }}
-              disabled={loading}
-            >
-              <Search className="h-4 w-4" aria-hidden="true" />
-              查询
-            </Button>
-          </div>
-        </CardContent>
+            </div>
+        </AccountFilterBar>
       </Card>
 
       <div>
         <Card className="min-w-0 overflow-hidden">
-          <CardHeader className="flex-row items-center justify-between gap-3">
+          <CardHeader>
             <div>
               <CardTitle>注册记录</CardTitle>
               <CardDescription>
@@ -1399,21 +1354,19 @@ export function AccountsPage() {
                 {selectedIds.length ? `，已选 ${selectedIds.length} 条` : ""}。
               </CardDescription>
             </div>
-            <div className="flex flex-wrap items-center justify-end gap-1.5">
-              <label className="flex min-h-10 cursor-pointer items-center gap-2 rounded-lg px-2 text-xs text-muted-foreground hover:bg-muted">
-                <input
-                  type="checkbox"
-                  checked={allVisibleSelected}
-                  onChange={(e) => toggleAll(e.target.checked)}
-                />
-                本页
-              </label>
-              <Button size="sm" variant="ghost" disabled={selectingAll || loading || !total} onClick={() => void selectAllFiltered()}>
-                {selectingAll ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
-                全部 {total} 条
-              </Button>
-            </div>
           </CardHeader>
+          <AccountSelectionToolbar
+            allVisibleSelected={allVisibleSelected}
+            selectableCount={items.length}
+            selectedCount={selectedIds.length}
+            total={total}
+            loading={loading}
+            selectingAll={selectingAll}
+            onTogglePage={toggleAll}
+            onSelectAll={() => void selectAllFiltered()}
+            onClear={clearSelection}
+            actions={<><Button size="sm" variant="outline" onClick={() => void load(page, pageSize)} disabled={loading}><RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} aria-hidden="true" />刷新</Button><AccountBatchActions selectedCount={selectedIds.length} busy={!!batchBusy} menuOpen={batchMenuOpen} reloginRunning={!!relogin?.running} ssoCheckRunning={ssoCheckRunning || batchBusy === "sso-check"} taskConflict={!!relogin?.running || ssoCheckRunning} onToggleMenu={() => setBatchMenuOpen((open) => !open)} onCloseMenu={() => setBatchMenuOpen(false)} onExport={(kind) => void onBatchExport(kind)} onRelogin={() => void onBatchRelogin()} onSsoCheck={() => void onBatchSsoCheck()} onDelete={() => { setBatchMenuOpen(false); openDeleteDialog(selectedIds); }} /></>}
+          />
           <CardContent className="p-0">
             {items.length === 0 ? (
               <div className="p-4 sm:p-6">
@@ -1461,8 +1414,8 @@ export function AccountsPage() {
 
                       <div className="grid grid-cols-2 gap-2 rounded-xl bg-muted/40 p-3 text-xs leading-5 text-muted-foreground">
                         <div>
-                          <span className="block">服务商</span>
-                          <strong className="block truncate font-medium text-foreground">{item.provider || "-"}</strong>
+                          <span className="block">邮箱来源</span>
+                          <EmailProviderLabel provider={item.provider} className="mt-1" />
                         </div>
                         <div>
                           <span className="block">耗时</span>
@@ -1592,7 +1545,7 @@ export function AccountsPage() {
                             ) : null}
                           </td>
                           <td className={`border-b border-slate-100 px-3 py-3 text-muted-foreground transition-colors ${detail?.id === item.id ? "bg-sky-50" : "bg-white group-hover:bg-slate-50"}`}>
-                            <span className="inline-flex rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600">{item.provider || "-"}</span>
+                            <EmailProviderLabel provider={item.provider} />
                           </td>
                           <td className={`border-b border-slate-100 px-3 py-3 tabular-nums text-muted-foreground transition-colors ${detail?.id === item.id ? "bg-sky-50" : "bg-white group-hover:bg-slate-50"}`}>{formatDuration(item.duration_seconds)}</td>
                           <td className={`sticky right-0 z-[5] border-b border-slate-100 px-3 py-3 shadow-[-10px_0_18px_-18px_rgba(15,23,42,0.3)] transition-colors ${detail?.id === item.id ? "bg-sky-50" : "bg-white group-hover:bg-slate-50"}`}>

@@ -31,6 +31,7 @@ export function AccountBatchActions({
   return (
     <div className="relative">
       <Button
+        size="sm"
         variant="outline"
         className="w-full"
         onClick={onToggleMenu}

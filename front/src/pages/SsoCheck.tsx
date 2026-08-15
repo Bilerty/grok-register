@@ -14,7 +14,8 @@ import {
   X,
 } from "lucide-react";
 import { AccountPageContext } from "@/components/AccountPageContext";
-import { AccountEmailLabel } from "@/components/AccountEmailIcon";
+import { AccountEmailLabel, EmailProviderIcon, EmailProviderLabel } from "@/components/AccountEmailIcon";
+import { AccountFilterBar, AccountSelectionToolbar } from "@/components/AccountTableToolbar";
 import { Badge, Button, Card, EmptyState, Input, PageHeader, PaginationBar, Select, Toast } from "@/components/ui";
 import { api, type AccountRecord, type SsoCheckItem, type SsoCheckStatus } from "@/lib/api";
 import {
@@ -52,6 +53,14 @@ function formatWhen(value: number | null | undefined) {
 }
 
 const SSO_RESULT_PAGE_SIZE = 20;
+
+function accountSsoStatus(item: AccountRecord) {
+  if (!item.sso_available) return { label: "缺失", variant: "secondary" as const };
+  if (item.bot_risk) return { label: "异常", variant: "destructive" as const };
+  if (item.sso_risk_check?.bot_flag_source === 0 || item.sso_risk_check?.bot_flag_source === "0") return { label: "正常", variant: "success" as const };
+  if (item.sso_risk_check) return { label: "未知", variant: "warning" as const };
+  return { label: "未检查", variant: "secondary" as const };
+}
 
 function SsoResultTable({ items }: { items: SsoCheckItem[] }) {
   return (
@@ -345,15 +354,37 @@ export function SsoCheckPage() {
       ) : null}
 
       <Card className="overflow-hidden">
-        <div className="border-b border-slate-200 p-4 sm:p-5">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between"><div><h2 className="font-semibold">选择账号</h2><p className="mt-1 text-xs text-slate-500">仅可选择已保存 SSO 的账号，共 {total} 条记录。</p></div><div className="grid gap-2 sm:grid-cols-[150px_minmax(220px,1fr)_auto]"><Select value={riskFilter} onChange={(event) => { setRiskFilter(event.target.value); setSelected({}); }} aria-label="按账号风控状态筛选"><option value="">全部账号</option><option value="0">正常账号</option><option value="1">异常账号</option><option value="unknown">未检查 / 未知</option></Select><div className="relative"><Search className="pointer-events-none absolute left-3 top-3.5 h-4 w-4 text-slate-400" /><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索邮箱" className="pl-9" /></div><Button onClick={() => void start()} disabled={!selectedIds.length || starting || !!status?.running || reloginRunning}>{starting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}开始检查 {selectedIds.length ? `(${selectedIds.length})` : ""}</Button></div></div>
-          {reloginRunning ? <p className="mt-3 text-xs text-amber-700 lg:text-right">账号重新登录正在运行，完成后可启动 SSO 风控检查。</p> : null}
-        </div>
+        <AccountFilterBar>
+          <div className="w-full sm:w-48"><label htmlFor="sso-risk-filter" className="mb-1.5 block text-xs font-medium text-slate-500">风控状态</label><Select id="sso-risk-filter" value={riskFilter} onChange={(event) => { setRiskFilter(event.target.value); setSelected({}); }} aria-label="按账号风控状态筛选"><option value="">全部账号</option><option value="0">正常账号</option><option value="1">异常账号</option><option value="unknown">未检查 / 未知</option></Select></div>
+          <div className="w-full sm:w-80"><label htmlFor="sso-account-search" className="mb-1.5 block text-xs font-medium text-slate-500">搜索账号</label><div className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" /><Input id="sso-account-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索邮箱" className="pl-9" /></div></div>
+        </AccountFilterBar>
+        <AccountSelectionToolbar
+          allVisibleSelected={allSelected}
+          selectableCount={eligible.length}
+          selectedCount={selectedIds.length}
+          total={total}
+          loading={loading}
+          selectingAll={selectingAll}
+          onTogglePage={(checked) => setSelected((old) => { const next = { ...old }; for (const item of eligible) checked ? (next[item.id] = true) : delete next[item.id]; return next; })}
+          onSelectAll={() => void selectAllMatchingAccounts()}
+          onClear={() => setSelected({})}
+          actions={<Button size="sm" onClick={() => void start()} disabled={!selectedIds.length || starting || !!status?.running || reloginRunning}>{starting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}开始检查</Button>}
+        />
+        {reloginRunning ? <p className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-700 sm:px-5">账号重新登录正在运行，完成后可启动 SSO 风控检查。</p> : null}
         {loading ? <div className="flex min-h-48 items-center justify-center text-sm text-slate-500"><Loader2 className="mr-2 h-4 w-4 animate-spin" />加载账号</div> : accounts.length ? (
-          <div className="divide-y divide-slate-100">
-            <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 px-4 py-2.5 text-xs font-medium text-slate-600"><label className="flex min-h-9 cursor-pointer items-center gap-2"><input type="checkbox" checked={allSelected} disabled={!eligible.length} onChange={(event) => { const checked = event.target.checked; setSelected((old) => { const next = { ...old }; for (const item of eligible) checked ? next[item.id] = true : delete next[item.id]; return next; }); }} />选择本页</label><div className="flex items-center gap-2"><span>已选 {selectedIds.length}</span><Button size="sm" variant="ghost" disabled={selectingAll || !total} onClick={() => void selectAllMatchingAccounts()}>{selectingAll ? <Loader2 className="h-4 w-4 animate-spin" /> : null}选择全部结果</Button>{selectedIds.length ? <Button size="sm" variant="ghost" onClick={() => setSelected({})}>取消</Button> : null}</div></div>
-            {accounts.map((item) => <label key={item.id} className={`flex items-center gap-3 px-4 py-3 sm:px-5 ${item.sso_available ? "" : "opacity-45"}`}><input type="checkbox" disabled={!item.sso_available} checked={!!selected[item.id]} onChange={(event) => setSelected((old) => ({ ...old, [item.id]: event.target.checked }))} /><div className="min-w-0 flex-1"><AccountEmailLabel email={item.email} botRisk={!!item.bot_risk} /><div className="mt-1 text-xs text-slate-500">{item.sso_available ? "SSO 可用" : "未找到 SSO 文件"}</div></div>{item.sso_risk_check ? <Badge variant={item.bot_risk ? "destructive" : item.sso_risk_check.bot_flag_source === 0 ? "success" : "warning"}>{item.bot_risk ? "异常" : item.sso_risk_check.bot_flag_source === 0 ? "正常" : "未知"}</Badge> : null}</label>)}
-          </div>
+          <>
+            <div className="hidden overflow-x-auto md:block">
+              <table className="w-full min-w-[820px] text-left text-sm">
+                <thead className="border-b border-slate-200 bg-slate-50 text-xs text-slate-500"><tr><th className="w-12 px-4 py-3"><span className="sr-only">选择账号</span></th><th className="px-4 py-3 font-medium">账号</th><th className="px-4 py-3 font-medium">邮箱来源</th><th className="px-4 py-3 font-medium">SSO 文件</th><th className="px-4 py-3 font-medium">风控结果</th><th className="px-4 py-3 font-medium">检查信息</th></tr></thead>
+                <tbody className="divide-y divide-slate-100">
+                  {accounts.map((item) => { const risk = accountSsoStatus(item); return <tr key={item.id} className={`hover:bg-slate-50/70 ${!item.sso_available ? "opacity-60" : ""}`}><td className="px-4 py-3"><input type="checkbox" disabled={!item.sso_available} checked={!!selected[item.id]} onChange={(event) => setSelected((old) => ({ ...old, [item.id]: event.target.checked }))} /></td><td className="max-w-[280px] px-4 py-3"><AccountEmailLabel email={item.email} botRisk={!!item.bot_risk} /></td><td className="px-4 py-3"><EmailProviderLabel provider={item.provider} /></td><td className="px-4 py-3"><Badge variant={item.sso_available ? "success" : "secondary"}>{item.sso_available ? "有效" : "缺失"}</Badge></td><td className="px-4 py-3"><Badge variant={risk.variant}>{risk.label}</Badge></td><td className="max-w-[280px] px-4 py-3 text-xs text-slate-500"><span className="block truncate" title={item.sso_risk_check?.error || item.account_file || ""}>{item.sso_risk_check ? resultNote({ account_id: item.id, email: item.email, status: item.bot_risk ? "flagged" : item.sso_risk_check.bot_flag_source === 0 ? "clean" : "unknown", bot_flag_source: item.sso_risk_check.bot_flag_source, error: item.sso_risk_check.error, response_ms: item.sso_risk_check.response_ms, attempts: 1 }) : item.sso_available ? "等待检查" : "未找到 SSO 文件"}</span></td></tr>; })}
+                </tbody>
+              </table>
+            </div>
+            <div className="divide-y divide-slate-100 md:hidden">
+              {accounts.map((item) => { const risk = accountSsoStatus(item); return <label key={item.id} className={`flex items-start gap-3 p-4 ${!item.sso_available ? "opacity-60" : ""}`}><input type="checkbox" className="mt-1" disabled={!item.sso_available} checked={!!selected[item.id]} onChange={(event) => setSelected((old) => ({ ...old, [item.id]: event.target.checked }))} /><div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-3"><div className="flex min-w-0 flex-1 items-start gap-2"><AccountEmailLabel email={item.email} botRisk={!!item.bot_risk} className="min-w-0 flex-1" /><EmailProviderIcon provider={item.provider} /></div><Badge variant={risk.variant}>{risk.label}</Badge></div><div className="mt-2 flex flex-wrap gap-1.5"><Badge variant={item.sso_available ? "success" : "secondary"}>SSO {item.sso_available ? "有效" : "缺失"}</Badge>{item.sso_risk_check ? <span className="text-xs text-slate-500">{resultNote({ account_id: item.id, email: item.email, status: item.bot_risk ? "flagged" : item.sso_risk_check.bot_flag_source === 0 ? "clean" : "unknown", bot_flag_source: item.sso_risk_check.bot_flag_source, error: item.sso_risk_check.error, response_ms: item.sso_risk_check.response_ms, attempts: 1 })}</span> : null}</div></div></label>; })}
+            </div>
+          </>
         ) : <div className="p-4"><EmptyState title="暂无账号" description="账号保存 SSO 后即可在这里执行详细检查。" /></div>}
         {total > 0 ? <PaginationBar page={page} pageSize={pageSize} total={total} loading={loading} onPageChange={(next) => void load(next)} onPageSizeChange={(size) => { setPageSize(size); setSelected({}); void load(1, query, size); }} /> : null}
       </Card>
