@@ -425,7 +425,7 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
               label="池选择器"
               field="proxy_selection"
               placeholder="round_robin / random / least_used"
-              helper="代理池分配策略；池质量整体较高，不做健康检测与冷却。"
+              helper="代理池分配策略；选择时对节点实时探测，不可达/冷却中的节点自动排除不参与调度。"
             />
             <ConfigField
               {...fieldState}
