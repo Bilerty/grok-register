@@ -145,6 +145,14 @@ class AccountIdsBody(BaseModel):
     ids: List[int] = Field(default_factory=list)
 
 
+class ProxyPoolImportBody(BaseModel):
+    text: str = ""
+
+
+class ProxyPoolUrlBody(BaseModel):
+    url: str
+
+
 class DeleteAccountsBody(AccountIdsBody):
     delete_files: bool = True
 
@@ -1435,12 +1443,6 @@ def create_app() -> FastAPI:
         return {"ok": True, **result}
 
     # ==================== 代理池管理 ====================
-
-    class ProxyPoolImportBody(BaseModel):
-        text: str = ""
-
-    class ProxyPoolUrlBody(BaseModel):
-        url: str
 
     @app.get("/api/proxy-pool")
     def api_proxy_pool_get(
