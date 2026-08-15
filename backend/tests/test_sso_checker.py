@@ -2,6 +2,7 @@ import unittest
 
 from backend.integrations.sso_checker import (
     BotFlagInfo,
+    SsoCheckConfig,
     SsoChecker,
     SsoCredential,
     SsoVerdict,
@@ -9,15 +10,19 @@ from backend.integrations.sso_checker import (
 
 
 class _Cookies:
+    def __init__(self):
+        self.set_calls = []
+
     def set(self, *args, **kwargs):
+        self.set_calls.append((args, kwargs))
         return None
 
 
 class _Response:
-    status_code = 200
     url = "https://grok.com/"
 
-    def __init__(self, source):
+    def __init__(self, source, status_code=200):
+        self.status_code = status_code
         source_json = "null" if source is None else str(source)
         self.text = (
             '<script>self.__next_f.push([1,"'
@@ -30,13 +35,16 @@ class _Response:
 
 
 class _Session:
-    def __init__(self, source):
+    def __init__(self, source, status_code=200):
         self.cookies = _Cookies()
         self.source = source
+        self.status_code = status_code
         self.proxies = {}
+        self.get_calls = []
 
     def get(self, *args, **kwargs):
-        return _Response(self.source)
+        self.get_calls.append((args, kwargs))
+        return _Response(self.source, self.status_code)
 
 
 class SsoCheckerTests(unittest.TestCase):
@@ -74,6 +82,38 @@ class SsoCheckerTests(unittest.TestCase):
                 checker = SsoChecker(session_factory=lambda source=source: _Session(source))
                 result = checker.check(SsoCredential("fixture-token"))
                 self.assertEqual(result.verdict, SsoVerdict.FLAGGED)
+
+    def test_edge_error_retries_with_impersonation_matched_user_agent(self):
+        first_session = _Session(0, 403)
+        second_session = _Session(0, 200)
+        sessions = iter((first_session, second_session))
+
+        def session_factory():
+            return next(sessions)
+
+        checker = SsoChecker(
+            config=SsoCheckConfig(proxy="http://proxy.test:8080"),
+            session_factory=session_factory,
+        )
+        result = checker.check(SsoCredential("fixture-token"))
+
+        self.assertEqual(result.verdict, SsoVerdict.CLEAN)
+        self.assertTrue(result.metadata["edge_header_retry"])
+        self.assertIn("User-Agent", first_session.get_calls[0][1]["headers"])
+        self.assertNotIn("User-Agent", second_session.get_calls[0][1]["headers"])
+        self.assertEqual(
+            first_session.get_calls[0][1]["headers"]["Accept-Language"],
+            "en-US,en;q=0.9",
+        )
+        for session in (first_session, second_session):
+            self.assertEqual(
+                session.proxies,
+                {
+                    "http": "http://proxy.test:8080",
+                    "https": "http://proxy.test:8080",
+                },
+            )
+            self.assertEqual(len(session.cookies.set_calls), 10)
 
 
 if __name__ == "__main__":

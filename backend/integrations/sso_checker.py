@@ -270,6 +270,7 @@ class SsoCheckConfig:
     impersonate: str = "chrome"
     user_agent: str = DEFAULT_USER_AGENT
     accept: str = "text/html,application/xhtml+xml"
+    accept_language: str = "en-US,en;q=0.9"
     cookie_names: tuple[str, ...] = ("sso", "sso-rw")
     cookie_domains: tuple[str, ...] = DEFAULT_COOKIE_DOMAINS
     # 保留来源脚本的配置字段以兼容调用方；当前规则固定为 0 正常、非 0 异常。
@@ -638,18 +639,15 @@ class SsoChecker:
 
         try:
             session = self._new_session(item.sso_token)
-            response = session.get(
-                self.config.home_url,
-                headers={
-                    "User-Agent": self.config.user_agent,
-                    "Accept": self.config.accept,
-                },
-                impersonate=self.config.impersonate,
-                timeout=self.config.timeout,
-                allow_redirects=self.config.allow_redirects,
-                verify=self.config.verify_tls,
-            )
+            response = self._get_home(session, include_user_agent=True)
             status_code = int(getattr(response, "status_code", 0) or 0)
+            if status_code in {403, 429, 503} and self.config.user_agent:
+                # A fixed UA can drift from curl_cffi's current TLS fingerprint.
+                # Retry with a fresh session and its impersonation-matched UA.
+                session = self._new_session(item.sso_token)
+                response = self._get_home(session, include_user_agent=False)
+                status_code = int(getattr(response, "status_code", 0) or 0)
+                base["metadata"]["edge_header_retry"] = True
             final_url = _safe_url(getattr(response, "url", ""))
             elapsed_ms = round((time.perf_counter() - started) * 1000)
             if status_code != 200:
@@ -795,6 +793,23 @@ class SsoChecker:
             for name in self.config.cookie_names:
                 session.cookies.set(name, sso_token, domain=domain)
         return session
+
+    def _get_home(self, session: Any, *, include_user_agent: bool) -> Any:
+        headers = {
+            "Accept": self.config.accept,
+            "Accept-Language": self.config.accept_language,
+            "Upgrade-Insecure-Requests": "1",
+        }
+        if include_user_agent and self.config.user_agent:
+            headers["User-Agent"] = self.config.user_agent
+        return session.get(
+            self.config.home_url,
+            headers=headers,
+            impersonate=self.config.impersonate,
+            timeout=self.config.timeout,
+            allow_redirects=self.config.allow_redirects,
+            verify=self.config.verify_tls,
+        )
 
     @staticmethod
     def _coerce_credential(
