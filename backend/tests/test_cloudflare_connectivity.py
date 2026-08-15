@@ -227,5 +227,37 @@ class CloudflareConnectivityTests(unittest.TestCase):
         self.assertEqual(token, "fallback-token")
 
 
+class TcpOpenIPv6Tests(unittest.TestCase):
+    """IPv6 代理主机连通探测：使用 AF_UNSPEC 双栈连接。"""
+
+    def test_create_connection_used_for_ipv6_literal(self):
+        import socket as socket_module
+
+        class FakeConn:
+            def close(self):
+                pass
+
+        captured = {}
+        with mock.patch.object(
+            network_checks.socket,
+            "create_connection",
+            side_effect=lambda addr, timeout: captured.update(addr=addr) or FakeConn(),
+        ) as create_connection:
+            self.assertTrue(network_checks._tcp_open("240e:1234::1", 3129))
+
+        self.assertEqual(captured["addr"], ("240e:1234::1", 3129))
+        self.assertTrue(create_connection.called)
+
+    def test_connection_error_returns_false(self):
+        with mock.patch.object(
+            network_checks.socket,
+            "create_connection",
+            side_effect=OSError("refused"),
+        ):
+            self.assertFalse(network_checks._tcp_open("proxy.example", 3129))
+
+
+
+
 if __name__ == "__main__":
     unittest.main()

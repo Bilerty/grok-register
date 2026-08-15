@@ -20,18 +20,16 @@ XAI_SIGNUP_URL = "https://accounts.x.ai/sign-up?redirect=grok-com"
 
 
 def _tcp_open(host: str, port: int, timeout: float = 2.0) -> bool:
-    s = socket.socket()
-    s.settimeout(timeout)
+    """TCP 连通探测（AF_UNSPEC，IPv4/IPv6 代理主机均支持）。"""
     try:
-        s.connect((host, port))
-        return True
-    except Exception:
+        conn = socket.create_connection((host, port), timeout=timeout)
+    except OSError:
         return False
-    finally:
-        try:
-            s.close()
-        except Exception:
-            pass
+    try:
+        conn.close()
+    except OSError:
+        pass
+    return True
 
 
 def _trace_exit_ip(http_get: Callable, proxies: dict) -> str:
