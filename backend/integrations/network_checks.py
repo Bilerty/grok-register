@@ -19,7 +19,7 @@ XAI_SIGNUP_CHECK_NAME = "xAI注册页"
 XAI_SIGNUP_URL = "https://accounts.x.ai/sign-up?redirect=grok-com"
 
 
-def _tcp_open(host: str, port: int, timeout: float = 2.0) -> bool:
+def _tcp_open(host: str, port: int, timeout: float = 5.0) -> bool:
     """TCP 连通探测（AF_UNSPEC，IPv4/IPv6 代理主机均支持）。"""
     try:
         conn = socket.create_connection((host, port), timeout=timeout)
@@ -36,7 +36,7 @@ def _trace_exit_ip(http_get: Callable, proxies: dict) -> str:
     """请求 Cloudflare trace 端点并解析出口 IP（失败返回空串）。"""
     resp = http_get(
         "https://www.cloudflare.com/cdn-cgi/trace",
-        timeout=8,
+        timeout=15,
         proxies=proxies,
     )
     text = str(getattr(resp, "text", "") or "")

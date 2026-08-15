@@ -340,8 +340,8 @@ class ProxyPool:
         self._persist_state()
         return result
 
-    def probe_all(self, max_workers: int = 16) -> dict:
-        """并发探测全部节点，返回统计。"""
+    def probe_all(self, max_workers: int = 4) -> dict:
+        """并发探测全部节点（低并发避免压垮远端网关），返回统计。"""
         urls = list(self.urls)
         if not urls:
             return {"total": 0, "healthy": 0, "unreachable": 0}
