@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from backend.integrations.grokiq import GrokIQNotifier
+from backend.integrations.grokiq import GrokIQNotifier, enqueue_imported_account
 from backend.registration.store import RegistrationRepository
 
 
@@ -112,6 +112,7 @@ class GrokIQOutboxTests(unittest.TestCase):
             bot_risk=False,
             bfs="",
             occurred_at="2026-08-11T12:00:00Z",
+            sso="RAW-SSO",
         )
         claimed = self.store.claim_grokiq_delivery()
         session = FakeSession()
@@ -136,8 +137,92 @@ class GrokIQOutboxTests(unittest.TestCase):
         self.assertEqual(url, "http://grokiq.test/account-imported")
         self.assertEqual(request["headers"]["x-grokiq-token"], "shared-token")
         self.assertEqual(request["json"]["event_id"], event["event_id"])
+        self.assertEqual(request["json"]["sso"], "RAW-SSO")
         delivery = self.store.grokiq_deliveries([self.registration_id])[self.registration_id]
         self.assertEqual(delivery["status"], "delivered")
+
+    def test_non_empty_sso_refreshes_a_delivered_outbox_event(self):
+        event = self.store.enqueue_grokiq_event(
+            registration_id=self.registration_id,
+            email="grokiq@example.com",
+            bot_risk=False,
+            bfs="",
+            occurred_at="2026-08-11T12:00:00Z",
+        )
+        claimed = self.store.claim_grokiq_delivery()
+        self.store.complete_grokiq_delivery(claimed["event_id"])
+
+        refreshed = self.store.enqueue_grokiq_event(
+            registration_id=self.registration_id,
+            email="grokiq@example.com",
+            bot_risk=False,
+            bfs="",
+            occurred_at="2026-08-11T12:05:00Z",
+            sso="REFRESHED-SSO",
+        )
+
+        self.assertEqual(refreshed["event_id"], event["event_id"])
+        self.assertEqual(refreshed["status"], "pending")
+        self.assertEqual(refreshed["sso"], "REFRESHED-SSO")
+
+    def test_same_sso_keeps_a_delivered_outbox_event_idempotent(self):
+        event = self.store.enqueue_grokiq_event(
+            registration_id=self.registration_id,
+            email="grokiq@example.com",
+            bot_risk=False,
+            bfs="",
+            occurred_at="2026-08-11T12:00:00Z",
+            sso="SAME-SSO",
+        )
+        claimed = self.store.claim_grokiq_delivery()
+        self.store.complete_grokiq_delivery(claimed["event_id"])
+
+        duplicate = self.store.enqueue_grokiq_event(
+            registration_id=self.registration_id,
+            email="grokiq@example.com",
+            bot_risk=False,
+            bfs="",
+            occurred_at="2026-08-11T12:05:00Z",
+            sso="SAME-SSO",
+        )
+
+        self.assertEqual(duplicate["event_id"], event["event_id"])
+        self.assertEqual(duplicate["status"], "delivered")
+
+    def test_enqueue_imported_account_reads_sso_from_account_file(self):
+        account_file = Path(self.tmp.name) / "grokiq@example.com.txt"
+        account_file.write_text(
+            "grokiq@example.com----password----FILE-SSO\n",
+            encoding="utf-8",
+        )
+
+        event = enqueue_imported_account(
+            self.store,
+            {
+                "id": self.registration_id,
+                "email": "grokiq@example.com",
+                "account_file": str(account_file),
+            },
+            {"grokiq_webhook_enabled": True},
+        )
+
+        self.assertEqual(event["sso"], "FILE-SSO")
+
+    def test_invalid_account_file_is_not_sent_as_sso(self):
+        account_file = Path(self.tmp.name) / "grokiq@example.com.txt"
+        account_file.write_text("invalid-account-file\n", encoding="utf-8")
+
+        event = enqueue_imported_account(
+            self.store,
+            {
+                "id": self.registration_id,
+                "email": "grokiq@example.com",
+                "account_file": str(account_file),
+            },
+            {"grokiq_webhook_enabled": True},
+        )
+
+        self.assertEqual(event["sso"], "")
 
 
 if __name__ == "__main__":

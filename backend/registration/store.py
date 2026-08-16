@@ -149,6 +149,7 @@ class RegistrationRepository:
                     registration_id INTEGER NOT NULL UNIQUE,
                     event_type TEXT NOT NULL DEFAULT 'grok2api.account_imported',
                     email TEXT NOT NULL,
+                    sso TEXT NOT NULL DEFAULT '',
                     bot_risk INTEGER NOT NULL DEFAULT 0,
                     bfs TEXT NOT NULL DEFAULT '',
                     occurred_at TEXT NOT NULL DEFAULT '',
@@ -173,6 +174,14 @@ class RegistrationRepository:
                 str(row["name"])
                 for row in conn.execute("PRAGMA table_info(registration_results)").fetchall()
             }
+            outbox_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(grokiq_outbox)").fetchall()
+            }
+            if "sso" not in outbox_columns:
+                conn.execute(
+                    "ALTER TABLE grokiq_outbox ADD COLUMN sso TEXT NOT NULL DEFAULT ''"
+                )
             migrations = {
                 "cpa_auth_path": "TEXT NOT NULL DEFAULT ''",
                 "grok2api_auth_path": "TEXT NOT NULL DEFAULT ''",
@@ -332,6 +341,7 @@ class RegistrationRepository:
         bot_risk: bool,
         bfs: Any,
         occurred_at: str,
+        sso: str = "",
     ) -> Dict[str, Any]:
         """Create one durable, idempotent account-imported notification."""
 
@@ -348,16 +358,17 @@ class RegistrationRepository:
             conn.execute(
                 """
                 INSERT OR IGNORE INTO grokiq_outbox (
-                    event_id, registration_id, event_type, email, bot_risk, bfs,
+                    event_id, registration_id, event_type, email, sso, bot_risk, bfs,
                     occurred_at, status, attempts,
                     next_attempt_at, created_at, updated_at
-                ) VALUES (?, ?, 'grok2api.account_imported', ?, ?, ?, ?,
+                ) VALUES (?, ?, 'grok2api.account_imported', ?, ?, ?, ?, ?,
                           'pending', 0, ?, ?, ?)
                 """,
                 (
                     event_id,
                     normalized_id,
                     normalized_email,
+                    str(sso or "").strip(),
                     1 if bot_risk else 0,
                     "" if bfs is None else str(bfs),
                     str(occurred_at or ""),
@@ -366,6 +377,16 @@ class RegistrationRepository:
                     now_text,
                 ),
             )
+            normalized_sso = str(sso or "").strip()
+            if normalized_sso:
+                conn.execute(
+                    """
+                    UPDATE grokiq_outbox
+                    SET sso = ?, status = 'pending', next_attempt_at = ?, updated_at = ?
+                    WHERE event_id = ? AND sso != ?
+                    """,
+                    (normalized_sso, now_epoch, now_text, event_id, normalized_sso),
+                )
             row = conn.execute(
                 "SELECT * FROM grokiq_outbox WHERE event_id = ?",
                 (event_id,),
@@ -497,9 +518,10 @@ class RegistrationRepository:
                     """,
                     batch,
                 ).fetchall()
-                result.update(
-                    {int(row["registration_id"]): dict(row) for row in rows}
-                )
+                for row in rows:
+                    item = dict(row)
+                    item.pop("sso", None)
+                    result[int(row["registration_id"])] = item
         return result
 
     def has_success(self, email: str) -> bool:
