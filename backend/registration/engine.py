@@ -321,6 +321,8 @@ DEFAULT_CONFIG = {
     "proxy_password": "",
     # 池节点风控/失败冷却时长（秒），0 表示不冷却
     "proxy_cooldown_seconds": 600,
+    # 节点池仅在批次启动前统一探测一次；批次内按账号绑定直接复用结果（省时）
+    "proxy_probe_once_per_batch": True,
     "enable_nsfw": True,
     "debug_mode": False,
     "browser_engine": _bs.normalize_browser_engine(
@@ -832,7 +834,7 @@ def _configure_proxy_pool():
     proxy_keys = (
         "proxy", "proxy_mode", "proxy_selection", "proxy_sticky_scope",
         "proxy_file", "proxy_username", "proxy_password",
-        "proxy_cooldown_seconds",
+        "proxy_cooldown_seconds", "proxy_probe_once_per_batch",
     )
 
     def signature():
@@ -2956,6 +2958,9 @@ def _preflight_proxy_pool(log_callback) -> None:
     )
     if summary.get("healthy", 0) <= 0:
         raise RuntimeError("代理池连通检测全部失败，无可达节点，任务退出")
+    if pool.probe_once_per_batch:
+        pool.mark_batch_probed()
+        log_callback("[代理池] 本批次按账号绑定将复用本次探测结果，不再逐节点探测")
 
 
 def run_registration(count):

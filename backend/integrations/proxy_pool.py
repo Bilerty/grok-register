@@ -124,6 +124,7 @@ class ProxyPool:
         cooldown_seconds: int = 600,
         state_file: str = "",
         probe: Optional[Callable[[str], dict]] = None,
+        probe_once_per_batch: bool = False,
     ):
         self.mode = mode
         self.urls = urls
@@ -134,6 +135,9 @@ class ProxyPool:
         self.cooldown_seconds = max(int(cooldown_seconds or 0), 0)
         self.state_file = state_file
         self.probe = probe
+        self.probe_once_per_batch = bool(probe_once_per_batch)
+        # 批次启动前已统一探测：整个批次内按账号绑定不再逐个探测
+        self._batch_probed = False
         self._lock = threading.Lock()
         self._rr = itertools.count()
         self._usage: dict[str, int] = {}
@@ -300,7 +304,7 @@ class ProxyPool:
         for offset in range(len(order)):
             template = order[(start + offset) % len(order)]
             use_url = self._expand_template(template, scope_key, email)
-            if self.probe is not None:
+            if self.probe is not None and not self._batch_probed:
                 result = self._probe_url(use_url)
                 state = self._nodes.get(template) or NodeState()
                 state.probe_at = now
@@ -398,6 +402,10 @@ class ProxyPool:
             self._dirty = True
         self._persist_state()
         return {"total": len(urls), "healthy": healthy, "unreachable": unreachable}
+
+    def mark_batch_probed(self) -> None:
+        """标记本批次已完成统一探测；此后按账号选节点时不再逐节点探测。"""
+        self._batch_probed = True
 
     def report_failure(self, url: str, reason: str = "") -> None:
         """业务失败（如风控）→ 节点进入冷却。"""
@@ -568,6 +576,8 @@ def build_pool_from_config(
         cooldown_seconds = 600
     cooldown_seconds = max(cooldown_seconds, 0)
 
+    probe_once = bool(config_get("proxy_probe_once_per_batch", False))
+
     urls: list[str] = []
     if mode == MODE_POOL:
         candidates = [line.strip() for line in proxy_value.splitlines() if line.strip()]
@@ -593,6 +603,7 @@ def build_pool_from_config(
             return ProxyPool(
                 MODE_STATIC, [], selection, sticky_scope, username, password,
                 cooldown_seconds=cooldown_seconds, state_file=state_file, probe=probe,
+                probe_once_per_batch=probe_once,
             )
         try:
             validate_http_proxy_url(proxy_value)
@@ -603,6 +614,7 @@ def build_pool_from_config(
     return ProxyPool(
         mode, urls, selection, sticky_scope, username, password,
         cooldown_seconds=cooldown_seconds, state_file=state_file, probe=probe,
+        probe_once_per_batch=probe_once,
     )
 
 
