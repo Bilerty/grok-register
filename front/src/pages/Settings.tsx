@@ -106,19 +106,21 @@ function ToggleRow({
   description,
   checked,
   onCheckedChange,
+  disabled,
 }: {
   title: string;
   description?: string;
   checked: boolean;
   onCheckedChange: (value: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
-    <div className="flex min-h-16 items-center justify-between gap-4 rounded-xl border bg-muted/35 px-3 py-3 sm:px-4">
+    <div className={`flex min-h-16 items-center justify-between gap-4 rounded-xl border bg-muted/35 px-3 py-3 sm:px-4 ${disabled ? "opacity-60" : ""}`}>
       <div className="min-w-0">
         <div className="text-sm font-medium text-foreground">{title}</div>
         {description ? <div className="mt-0.5 text-xs leading-5 text-muted-foreground">{description}</div> : null}
       </div>
-      <Switch checked={checked} onCheckedChange={onCheckedChange} label={title} />
+      <Switch checked={checked} onCheckedChange={onCheckedChange} disabled={disabled} label={title} />
     </div>
   );
 }
@@ -552,10 +554,33 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                   <ConfigField {...fieldState} label="管理员密码" field="grok2api_remote_password" type="password" />
                   <ToggleRow
                     title="转换成功后自动导入"
-                    description="生成三种 Grok2API JSON 后立即登录远程管理端并逐个导入；导入结果单独记录"
+                    description="生成三种 Grok2API JSON 后立即登录远程管理端，并导入下方勾选的格式；导入结果单独记录"
                     checked={!!config.grok2api_auto_import}
                     onCheckedChange={(value) => setField("grok2api_auto_import", value)}
                   />
+                  <div className="grid gap-3">
+                    <ToggleRow
+                      title="导入 Build"
+                      description="默认导入 grok_build"
+                      checked={config.grok2api_auto_import_build !== false}
+                      onCheckedChange={(value) => setField("grok2api_auto_import_build", value)}
+                      disabled={!config.grok2api_auto_import}
+                    />
+                    <ToggleRow
+                      title="导入 Web"
+                      description="默认不导入 grok_web"
+                      checked={!!config.grok2api_auto_import_web}
+                      onCheckedChange={(value) => setField("grok2api_auto_import_web", value)}
+                      disabled={!config.grok2api_auto_import}
+                    />
+                    <ToggleRow
+                      title="导入 Console"
+                      description="默认不导入 grok_console"
+                      checked={!!config.grok2api_auto_import_console}
+                      onCheckedChange={(value) => setField("grok2api_auto_import_console", value)}
+                      disabled={!config.grok2api_auto_import}
+                    />
+                  </div>
                 </CardContent>
               </Card>
 

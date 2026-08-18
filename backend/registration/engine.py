@@ -336,6 +336,9 @@ DEFAULT_CONFIG = {
     "grok2api_remote_username": "",
     "grok2api_remote_password": "",
     "grok2api_auto_import": True,
+    "grok2api_auto_import_build": True,
+    "grok2api_auto_import_web": False,
+    "grok2api_auto_import_console": False,
     # CPA 远程上传开关（独立于 cpa_auto_add；后者控制整个 SSO→auth 链路）
     "cpa_upload_enabled": True,
     # Sub2API：注册拿到 SSO 后直接上传 sso-to-oauth
@@ -1467,6 +1470,7 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
     g2a_dir = str(config.get("grok2api_auth_dir", "") or "").strip()
     g2a_remote_configured = _grok2api.Grok2APIClient.is_configured(config)
     g2a_auto_import = bool(config.get("grok2api_auto_import", False))
+    g2a_import_formats = _grok2api.Grok2APIClient.auto_import_formats(config)
     _set_result(
         cpa_remote_status="ready" if remote_url and management_key else "not_configured",
         grok2api_remote_status="ready" if g2a_remote_configured else "not_configured",
@@ -1626,16 +1630,22 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
                 grok2api_auth_path_value = str(gpath)
                 auth_path_value = auth_path_value or str(gpath)
                 auth_entries.extend(f"Grok2API {kind}: {path}" for kind, path in gpaths.items())
-                if g2a_remote_configured and g2a_auto_import:
+                if g2a_remote_configured and g2a_import_formats:
                     _cpa_log(
                         "Grok2API 远程导入网络: 直连 -> "
-                        f"{str(config.get('grok2api_remote_url') or '').rstrip('/')}"
+                        f"{str(config.get('grok2api_remote_url') or '').rstrip('/')} "
+                        f"formats={','.join(g2a_import_formats)}"
                     )
                     remote_results = {}
                     remote_errors = {}
                     try:
                         with _grok2api.Grok2APIClient.from_config(config) as client:
-                            for format_name, format_path in gpaths.items():
+                            for format_name in g2a_import_formats:
+                                format_path = gpaths.get(format_name)
+                                if not format_path:
+                                    remote_errors[format_name] = "授权 JSON 不存在"
+                                    _cpa_log(f"Grok2API 远程导入跳过 [{format_name}]: 授权 JSON 不存在")
+                                    continue
                                 try:
                                     remote_result = client.import_auth_file(
                                         format_path, format_name=format_name
@@ -1681,6 +1691,8 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
                         },
                     )
                 elif g2a_remote_configured:
+                    if g2a_auto_import and not g2a_import_formats:
+                        _cpa_log("已开启 Grok2API 自动导入，但未勾选 Build / Web / Console")
                     _set_result(grok2api_remote_status="ready")
             except Exception as g2a_exc:
                 _cpa_log(f"Grok2API 写入失败: {g2a_exc}")
@@ -2801,7 +2813,16 @@ def run_registration(count):
     registration_log(f"[*] SSO→auth: {'开' if config.get('cpa_auto_add') else '关（账号将不计成功）'}" + (f"（{_token_mode_label}）" if config.get('cpa_auto_add') else ""))
     # TokenAuth 各下游上传开关摘要，便于开跑时一眼确认
     _cpa_up = "开" if config.get("cpa_upload_enabled", True) else "关"
-    _g2a_up = "开" if config.get("grok2api_auto_import", False) else "关"
+    _g2a_formats = _grok2api.Grok2APIClient.auto_import_formats(config)
+    if _g2a_formats:
+        _g2a_labels = {
+            "grok_build": "build",
+            "grok_web": "web",
+            "grok_console": "console",
+        }
+        _g2a_up = "开(" + "/".join(_g2a_labels[name] for name in _g2a_formats) + ")"
+    else:
+        _g2a_up = "关"
     _s2a_up = "开" if config.get("sub2api_enabled", False) else "关"
     registration_log(f"[*] [TokenAuth] CPA上传={_cpa_up} Grok2API导入={_g2a_up} Sub2API={_s2a_up}")
     traceback_log_lock = threading.Lock()

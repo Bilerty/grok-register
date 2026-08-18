@@ -23,6 +23,16 @@ class Grok2APIClient:
         "grok_web": "/api/admin/v1/accounts/web/import",
         "grok_console": "/api/admin/v1/accounts/console/import",
     }
+    AUTO_IMPORT_KEYS = {
+        "grok_build": "grok2api_auto_import_build",
+        "grok_web": "grok2api_auto_import_web",
+        "grok_console": "grok2api_auto_import_console",
+    }
+    AUTO_IMPORT_DEFAULTS = {
+        "grok_build": True,
+        "grok_web": False,
+        "grok_console": False,
+    }
     CONFIG_KEYS = (
         "grok2api_remote_url",
         "grok2api_remote_username",
@@ -77,6 +87,20 @@ class Grok2APIClient:
     @classmethod
     def is_configured(cls, config: Mapping[str, Any]) -> bool:
         return all(str(config.get(key, "") or "").strip() for key in cls.CONFIG_KEYS)
+
+    @classmethod
+    def auto_import_formats(cls, config: Mapping[str, Any] | None = None) -> tuple[str, ...]:
+        """注册/重登成功后需要自动导入的 Grok2API 格式。"""
+        data = config or {}
+        if not bool(data.get("grok2api_auto_import", False)):
+            return ()
+        selected: list[str] = []
+        for format_name in cls.IMPORT_PATHS:
+            key = cls.AUTO_IMPORT_KEYS[format_name]
+            default = cls.AUTO_IMPORT_DEFAULTS[format_name]
+            if bool(data.get(key, default)):
+                selected.append(format_name)
+        return tuple(selected)
 
     @property
     def access_token(self) -> str:

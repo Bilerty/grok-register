@@ -173,7 +173,10 @@ Docker 配置中的授权目录建议保持：
   "grok2api_remote_url": "https://grok2api.example.com",
   "grok2api_remote_username": "admin",
   "grok2api_remote_password": "change-me",
-  "grok2api_auto_import": true
+  "grok2api_auto_import": true,
+  "grok2api_auto_import_build": true,
+  "grok2api_auto_import_web": false,
+  "grok2api_auto_import_console": false
 }
 ```
 
@@ -225,6 +228,9 @@ Windows 启动：
 | `grok2api_remote_username` | 远程 Grok2API 管理员账号 |
 | `grok2api_remote_password` | 远程 Grok2API 管理员密码 |
 | `grok2api_auto_import` | JSON 生成后自动登录并导入远程 Grok2API |
+| `grok2api_auto_import_build` | 自动导入 grok_build，默认开启 |
+| `grok2api_auto_import_web` | 自动导入 grok_web，默认关闭 |
+| `grok2api_auto_import_console` | 自动导入 grok_console，默认关闭 |
 | `grokiq_webhook_enabled` | 导入 Grok Build 后发送账号已导入 Webhook |
 | `grokiq_webhook_url` | GrokIQ `account-imported` 接口地址 |
 | `grokiq_webhook_token` | Webhook 请求头 `x-grokiq-token` |
