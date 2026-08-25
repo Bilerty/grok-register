@@ -26,6 +26,7 @@ from curl_cffi import requests
 
 # 授权交换和导出逻辑集中在 integrations 包，编排层只负责调用。
 from backend.integrations import auth_exchange as _s2cpa
+from backend.integrations import exit_ip as _exit_ip
 from backend.integrations import grokiq as _grokiq
 from backend.integrations import grok2api_client as _grok2api
 from backend.integrations import sub2api_client as _sub2api
@@ -419,6 +420,64 @@ class RegistrationRiskDenied(Exception):
         self.bot_flag_source = bot_flag_source
         self.bot_flag_details = str(bot_flag_details or "")
         self.risk_state = dict(risk_state or {})
+
+
+def prepare_registration_exit_ip(log_callback=None) -> str:
+    """打开注册页前，在浏览器里识别出口 IP，并尽量避开已风控出口。"""
+    return _exit_ip.ensure_unflagged_exit_ip(
+        store=get_registration_repository(),
+        proxy_enabled=bool(get_proxies()),
+        log_callback=log_callback,
+        restart=lambda: restart_browser(log_callback=log_callback),
+    )
+
+
+def remember_registration_risk_exit_ip(exc, email="", log_callback=None) -> bool:
+    """注册风控时再测一次浏览器出口 IP 再入库。
+
+    动态代理池可能在打开注册页后换出口，不能直接用注册前缓存的 IP。
+    """
+    if not getattr(exc, "bot_risk", False):
+        return False
+    started_ip = _exit_ip.current_start_exit_ip() or _exit_ip.current_exit_ip()
+    ip = _exit_ip.refresh_browser_exit_ip(
+        log_callback=log_callback,
+        reason="注册风控时",
+    ) or started_ip
+    if not ip:
+        if log_callback:
+            log_callback("[出口IP] 注册风控，但本次未识别到浏览器出口 IP，无法记录")
+        return False
+    try:
+        saved = get_registration_repository().remember_flagged_exit_ip(
+            ip,
+            email=email,
+            bot_flag_source=getattr(exc, "bot_flag_source", None),
+            failure_reason=str(exc),
+        )
+    except Exception as store_exc:
+        if log_callback:
+            log_callback(f"[出口IP] 记录风控出口 IP {ip} 失败: {store_exc}")
+        return False
+    if saved and log_callback:
+        if started_ip and started_ip != ip:
+            log_callback(
+                f"[出口IP] 注册风控，已记录出口 IP {ip}（打开注册页时是 {started_ip}）"
+            )
+        else:
+            log_callback(f"[出口IP] 注册风控，已记录出口 IP {ip}")
+    return bool(saved)
+
+
+def mark_registration_risk(cpa_detail, exc, *, email="", log_callback=None) -> None:
+    if isinstance(cpa_detail, dict):
+        cpa_detail.update(status="rejected", error=str(exc))
+    if apply_risk_bot_flag(cpa_detail, exc) and log_callback:
+        log_callback(
+            "[!] 注册风控标记 bot_risk"
+            f" botFlagSource={getattr(exc, 'bot_flag_source', None)!r}"
+        )
+    remember_registration_risk_exit_ip(exc, email=email, log_callback=log_callback)
 
 
 def apply_risk_bot_flag(cpa_detail: dict, exc) -> bool:
@@ -2767,6 +2826,7 @@ def _wire_runtime_modules():
         EmailDomainRejected=EmailDomainRejected,
         AccountRetryNeeded=AccountRetryNeeded,
         email_unavailable=email_registered_successfully,
+        prepare_exit_ip=prepare_registration_exit_ip,
     )
 
 # 页面步骤由 registration.signup_flow 实现。
@@ -2850,14 +2910,19 @@ def run_registration(count):
         return kind
 
     def _persist_result(*, started_at, worker_id=0, **kwargs):
+        extra = dict(kwargs.get("extra") or {})
+        exit_ip = _exit_ip.current_exit_ip()
+        start_exit_ip = _exit_ip.current_start_exit_ip()
+        if exit_ip:
+            extra["exit_ip"] = exit_ip
+        if start_exit_ip and start_exit_ip != exit_ip:
+            extra["exit_ip_at_start"] = start_exit_ip
         trace_text = ""
         if str(kwargs.get("status") or "").strip().lower() == "failure":
             trace_text = current_exception_traceback()
             if trace_text:
-                extra = dict(kwargs.get("extra") or {})
                 extra["exception_traceback"] = trace_text
                 extra["exception_type"] = trace_text.rstrip().splitlines()[-1]
-                kwargs["extra"] = extra
                 signature = hash(trace_text)
                 with traceback_log_lock:
                     should_log_traceback = signature not in logged_traceback_signatures
@@ -2868,6 +2933,8 @@ def run_registration(count):
                         "[异常堆栈]\n"
                         + current_exception_traceback(TRACEBACK_LOG_MAX_CHARS)
                     )
+        if extra:
+            kwargs["extra"] = extra
         if (
             str(kwargs.get("status") or "").strip().lower() == "failure"
             and str(kwargs.get("failure_type") or "") != FAIL_CPA
@@ -3127,12 +3194,12 @@ def run_registration(count):
                         i += 1
                         retry = 0
                         if kind == FAIL_RISK:
-                            cpa_detail.update(status="rejected", error=str(exc))
-                            if apply_risk_bot_flag(cpa_detail, exc):
-                                registration_log(
-                                    f"[W{wid+1}] [!] 注册风控标记 bot_risk"
-                                    f" botFlagSource={getattr(exc, 'bot_flag_source', None)!r}"
-                                )
+                            mark_registration_risk(
+                                cpa_detail,
+                                exc,
+                                email=current_attempt_email(email, exc),
+                                log_callback=lambda m: registration_log(f"[W{wid+1}] {m}"),
+                            )
                         fail_email = current_attempt_email(email, exc)
                         email_disable_detail = maybe_disable_outlookemail_for_consumed_failure(
                             kind,
@@ -3462,12 +3529,12 @@ def run_registration(count):
                 retry_count_for_slot = 0
                 i += 1
                 if kind == FAIL_RISK:
-                    cpa_detail.update(status="rejected", error=str(exc))
-                    if apply_risk_bot_flag(cpa_detail, exc):
-                        registration_log(
-                            "[!] 注册风控标记 bot_risk"
-                            f" botFlagSource={getattr(exc, 'bot_flag_source', None)!r}"
-                        )
+                    mark_registration_risk(
+                        cpa_detail,
+                        exc,
+                        email=current_attempt_email(email, exc),
+                        log_callback=registration_log,
+                    )
                 fail_email = current_attempt_email(email, exc)
                 email_disable_detail = maybe_disable_outlookemail_for_consumed_failure(
                     kind,

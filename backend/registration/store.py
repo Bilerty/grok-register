@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import datetime as _datetime
+import ipaddress
 import json
 import os
 import sqlite3
@@ -260,7 +261,26 @@ class RegistrationRepository:
                 """,
                 (self.now_text(),),
             )
-            conn.execute("PRAGMA user_version = 7")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS flagged_exit_ips (
+                    ip TEXT PRIMARY KEY,
+                    first_seen_at TEXT NOT NULL DEFAULT '',
+                    last_seen_at TEXT NOT NULL DEFAULT '',
+                    hit_count INTEGER NOT NULL DEFAULT 1,
+                    last_email TEXT NOT NULL DEFAULT '',
+                    last_bot_flag_source TEXT NOT NULL DEFAULT '',
+                    last_failure_reason TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_flagged_exit_ips_last_seen
+                    ON flagged_exit_ips(last_seen_at)
+                """
+            )
+            conn.execute("PRAGMA user_version = 8")
 
     def add_result(self, record: Dict[str, Any]) -> int:
         now = self.now_text()
@@ -992,6 +1012,76 @@ class RegistrationRepository:
                 values,
             )
             return bool(cursor.rowcount)
+
+
+    @staticmethod
+    def _normalize_exit_ip(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        try:
+            return ipaddress.ip_address(text).compressed
+        except ValueError:
+            return ""
+
+    def remember_flagged_exit_ip(
+        self,
+        ip: str,
+        *,
+        email: str = "",
+        bot_flag_source: Any = None,
+        failure_reason: str = "",
+    ) -> bool:
+        """记录一次注册风控对应的浏览器出口 IP。"""
+        normalized = self._normalize_exit_ip(ip)
+        if not normalized:
+            return False
+        now = self.now_text()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO flagged_exit_ips (
+                    ip, first_seen_at, last_seen_at, hit_count,
+                    last_email, last_bot_flag_source, last_failure_reason
+                )
+                VALUES (?, ?, ?, 1, ?, ?, ?)
+                ON CONFLICT(ip) DO UPDATE SET
+                    last_seen_at = excluded.last_seen_at,
+                    hit_count = hit_count + 1,
+                    last_email = CASE
+                        WHEN excluded.last_email = '' THEN last_email
+                        ELSE excluded.last_email
+                    END,
+                    last_bot_flag_source = CASE
+                        WHEN excluded.last_bot_flag_source = '' THEN last_bot_flag_source
+                        ELSE excluded.last_bot_flag_source
+                    END,
+                    last_failure_reason = CASE
+                        WHEN excluded.last_failure_reason = '' THEN last_failure_reason
+                        ELSE excluded.last_failure_reason
+                    END
+                """,
+                (
+                    normalized,
+                    now,
+                    now,
+                    str(email or "").strip(),
+                    "" if bot_flag_source is None else str(bot_flag_source),
+                    str(failure_reason or "").strip(),
+                ),
+            )
+        return True
+
+    def is_flagged_exit_ip(self, ip: str) -> bool:
+        normalized = self._normalize_exit_ip(ip)
+        if not normalized:
+            return False
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM flagged_exit_ips WHERE ip = ?",
+                (normalized,),
+            ).fetchone()
+        return row is not None
 
     def update_bot_risk_by_email(
         self,
