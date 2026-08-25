@@ -105,8 +105,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          notes_file=".github/releases/${GITHUB_REF_NAME}.md"
+          if [[ -f "$notes_file" ]]; then
+            gh release create "$GITHUB_REF_NAME" \
+              --verify-tag \
+              --notes-file "$notes_file" \
+              --title "$GITHUB_REF_NAME"
+          else
             gh release create "$GITHUB_REF_NAME" \
               --verify-tag \
               --generate-notes \
               --title "$GITHUB_REF_NAME"
+          fi
