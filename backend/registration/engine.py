@@ -314,7 +314,7 @@ DEFAULT_CONFIG = {
     ),
     "browser_headless": False,
     "browser_locale": "en-US",
-    "browser_low_traffic_mode": False,
+    "browser_low_traffic_mode": True,
     "close_browser_on_stop": False,
     "log_level": "info",
     "register_count": 1,
