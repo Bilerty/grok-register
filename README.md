@@ -215,7 +215,7 @@ Windows 启动：
 | `email_provider` | 邮箱服务商 |
 | `register_count` | 注册数量 |
 | `register_workers` | 并发数量，默认 1 |
-| `proxy` | 注册和 OAuth 请求使用的 HTTP(S) 代理；支持 `http://host:port` 和 `http://user:password@host:port`，凭据中的特殊字符需使用 URL 百分号编码。注册风控会记录浏览器识别到的出口 IP；下次若仍是该 IP，会重启浏览器换出口后再注册 |
+| `proxy` | 注册和 OAuth 请求使用的 HTTP(S) 代理；支持 `http://host:port` 和 `http://user:password@host:port`，凭据中的特殊字符需使用 URL 百分号编码。注册风控会记录浏览器识别到的出口 IP；下次若仍是该 IP，会重启浏览器换出口后再注册。风控名单在「账号中心 → 出口 IP 风控」查看，单账号出口 IP 在「账号中心 → 账号管理 → 查看」详情中 |
 | `browser_engine` | 浏览器后端：`camoufox`（默认）或 `cloakbrowser` |
 | `browser_headless` | 本机无头模式；Docker 中强制关闭 |
 | `cpa_auto_add` | 注册后生成 CPA 授权 |

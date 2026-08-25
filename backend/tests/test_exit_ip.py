@@ -7,6 +7,7 @@ from backend.integrations import exit_ip
 from backend.registration import engine
 from backend.registration import signup_flow
 from backend.registration.store import RegistrationRepository
+from backend.web import application
 
 
 class ParseExitIpTests(unittest.TestCase):
@@ -65,6 +66,52 @@ class FlaggedExitIpStoreTests(unittest.TestCase):
                 }
             self.assertEqual(version, 8)
             self.assertIn("flagged_exit_ips", tables)
+
+    def test_lists_and_deletes_flagged_exit_ips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RegistrationRepository(Path(tmp) / "results.sqlite3")
+            self.assertTrue(
+                store.remember_flagged_exit_ip(
+                    "203.0.113.8",
+                    email="first@example.com",
+                    bot_flag_source=1,
+                    failure_reason="botFlagSource=1",
+                )
+            )
+            self.assertTrue(
+                store.remember_flagged_exit_ip(
+                    "2606:4700:4700::1111",
+                    email="v6@example.com",
+                )
+            )
+            items = store.list_flagged_exit_ips()
+            by_ip = {item["ip"]: item for item in items}
+            self.assertEqual(set(by_ip), {"203.0.113.8", "2606:4700:4700::1111"})
+            self.assertEqual(by_ip["203.0.113.8"]["last_email"], "first@example.com")
+            self.assertEqual(by_ip["203.0.113.8"]["hit_count"], 1)
+            self.assertEqual(by_ip["203.0.113.8"]["last_bot_flag_source"], "1")
+            self.assertTrue(store.delete_flagged_exit_ip(" 203.0.113.8 "))
+            self.assertFalse(store.is_flagged_exit_ip("203.0.113.8"))
+            self.assertFalse(store.delete_flagged_exit_ip("203.0.113.8"))
+            remaining = store.list_flagged_exit_ips()
+            self.assertEqual([item["ip"] for item in remaining], ["2606:4700:4700::1111"])
+
+
+class SerializeExitIpTests(unittest.TestCase):
+    def test_serialized_record_exposes_exit_ip(self):
+        item = application._serialize_record(
+            {
+                "id": 7,
+                "extra_json": '{"exit_ip": "203.0.113.8", "exit_ip_at_start": "198.51.100.1"}',
+            }
+        )
+        self.assertEqual(item["exit_ip"], "203.0.113.8")
+        self.assertEqual(item["exit_ip_at_start"], "198.51.100.1")
+
+    def test_flagged_exit_ip_routes_are_registered(self):
+        paths = {route.path for route in application.create_app().routes}
+        self.assertIn("/api/flagged-exit-ips", paths)
+        self.assertIn("/api/flagged-exit-ips/delete", paths)
 
 
 class EnsureUnflaggedExitIpTests(unittest.TestCase):

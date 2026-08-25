@@ -1083,6 +1083,35 @@ class RegistrationRepository:
             ).fetchone()
         return row is not None
 
+    def list_flagged_exit_ips(self, limit: int = 200) -> List[Dict[str, Any]]:
+        try:
+            capped = max(1, min(int(limit or 200), 1000))
+        except (TypeError, ValueError):
+            capped = 200
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT ip, first_seen_at, last_seen_at, hit_count,
+                       last_email, last_bot_flag_source, last_failure_reason
+                FROM flagged_exit_ips
+                ORDER BY last_seen_at DESC, ip
+                LIMIT ?
+                """,
+                (capped,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_flagged_exit_ip(self, ip: str) -> bool:
+        normalized = self._normalize_exit_ip(ip)
+        if not normalized:
+            return False
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM flagged_exit_ips WHERE ip = ?",
+                (normalized,),
+            )
+        return bool(cursor.rowcount)
+
     def update_bot_risk_by_email(
         self,
         email: str,

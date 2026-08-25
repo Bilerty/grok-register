@@ -162,6 +162,10 @@ class LoginBody(BaseModel):
     confirm_password: str = ""
 
 
+class FlaggedExitIpBody(BaseModel):
+    ip: str = ""
+
+
 def _batch_account_ids(ids: List[int]) -> List[int]:
     normalized: List[int] = []
     seen = set()
@@ -510,6 +514,8 @@ def _serialize_record(
     else:
         item["extra"] = extra
     extra_data = item["extra"] if isinstance(item["extra"], dict) else {}
+    item["exit_ip"] = str(extra_data.get("exit_ip") or "").strip()
+    item["exit_ip_at_start"] = str(extra_data.get("exit_ip_at_start") or "").strip()
     risk_check = extra_data.get("sso_risk_check")
     item["sso_risk_check"] = risk_check if isinstance(risk_check, dict) else None
     item["exception_traceback"] = str(extra_data.get("exception_traceback") or "")
@@ -1403,6 +1409,23 @@ def create_app() -> FastAPI:
             "side_lines": side_lines,
             "file_errors": file_errors[:20],
         }
+
+    @app.get("/api/flagged-exit-ips")
+    def api_flagged_exit_ips() -> Dict[str, Any]:
+        store = _gr().get_registration_repository()
+        items = store.list_flagged_exit_ips()
+        return {"ok": True, "items": items, "total": len(items)}
+
+    @app.post("/api/flagged-exit-ips/delete")
+    def api_flagged_exit_ips_delete(body: FlaggedExitIpBody) -> Dict[str, Any]:
+        ip = str(body.ip or "").strip()
+        if not ip:
+            raise HTTPException(status_code=400, detail="请提供要删除的出口 IP")
+        store = _gr().get_registration_repository()
+        deleted = store.delete_flagged_exit_ip(ip)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="风控名单中没有这个出口 IP")
+        return {"ok": True, "deleted": ip}
 
     @app.get("/api/config")
     def api_config_get() -> Dict[str, Any]:
