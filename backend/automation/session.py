@@ -7,6 +7,8 @@ profile 清理。
 from __future__ import annotations
 
 import gc
+import hashlib
+import json
 import os
 import signal
 import shutil
@@ -14,6 +16,7 @@ import tempfile
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Callable, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -107,11 +110,29 @@ _is_debug: Optional[Callable[[], bool]] = None
 _is_headless: Optional[Callable[[], bool]] = None
 _get_locale: Optional[Callable[[], str]] = None
 _get_engine: Optional[Callable[[], str]] = None
+_is_low_traffic: Optional[Callable[[], bool]] = None
 _extension_path: str = ""
 _start_fail_lock = threading.Lock()
 _start_fail_streak = 0
 _start_fail_threshold = 3
 _browser_launch_blocked = threading.Event()
+_low_traffic_cache_locks: dict[str, threading.Lock] = {}
+_low_traffic_cache_locks_guard = threading.Lock()
+
+_LOW_TRAFFIC_BLOCKED_HOSTS = {
+    "cdn.cookielaw.org",
+    "js.stripe.com",
+    "ublockorigin.pages.dev",
+    "ublockorigin.github.io",
+}
+_LOW_TRAFFIC_MEDIA_HOSTS = {"media.x.ai"}
+_LOW_TRAFFIC_VISUAL_HOSTS = {"cdn.grok.com", "grok.com", "www.grok.com"}
+_LOW_TRAFFIC_CACHE_HOSTS = {"cdn.grok.com"}
+_LOW_TRAFFIC_CACHE_TYPES = {"script", "stylesheet", "font"}
+_LOW_TRAFFIC_CACHE_MAX_BYTES = 24 * 1024 * 1024
+_LOW_TRAFFIC_CACHE_TOTAL_BYTES = 512 * 1024 * 1024
+_low_traffic_cache_pruned = False
+_low_traffic_cache_prune_lock = threading.Lock()
 
 
 def configure(
@@ -120,14 +141,17 @@ def configure(
     is_headless=None,
     get_locale=None,
     get_engine=None,
+    is_low_traffic=None,
     extension_path="",
 ):
-    global _get_proxy, _is_debug, _is_headless, _get_locale, _get_engine, _extension_path
+    global _get_proxy, _is_debug, _is_headless, _get_locale, _get_engine
+    global _is_low_traffic, _extension_path
     _get_proxy = get_proxies
     _is_debug = is_debug
     _is_headless = is_headless
     _get_locale = get_locale
     _get_engine = get_engine
+    _is_low_traffic = is_low_traffic
     _extension_path = extension_path or ""
 
 
@@ -178,6 +202,185 @@ def _debug() -> bool:
 
 def _headless() -> bool:
     return bool(_is_headless()) if _is_headless else False
+
+
+def low_traffic_enabled() -> bool:
+    return bool(_is_low_traffic()) if _is_low_traffic else False
+
+
+def low_traffic_should_block(url: str, resource_type: str) -> bool:
+    """只拦截不参与注册状态与 Turnstile 验证的高流量资源。"""
+    try:
+        host = (urlparse(str(url or "")).hostname or "").lower()
+    except ValueError:
+        return False
+    kind = str(resource_type or "").strip().lower()
+    if host in _LOW_TRAFFIC_BLOCKED_HOSTS:
+        return True
+    if kind in {"media", "font"}:
+        return host != "challenges.cloudflare.com" and (
+            host in _LOW_TRAFFIC_MEDIA_HOSTS or host in _LOW_TRAFFIC_VISUAL_HOSTS
+        )
+    return kind == "image" and (
+        host in _LOW_TRAFFIC_MEDIA_HOSTS or host in _LOW_TRAFFIC_VISUAL_HOSTS
+    )
+
+
+def low_traffic_should_cache(url: str, resource_type: str, method: str = "GET") -> bool:
+    if str(method or "GET").upper() != "GET":
+        return False
+    try:
+        host = (urlparse(str(url or "")).hostname or "").lower()
+    except ValueError:
+        return False
+    kind = str(resource_type or "").strip().lower()
+    return host in _LOW_TRAFFIC_CACHE_HOSTS and kind in _LOW_TRAFFIC_CACHE_TYPES
+
+
+def _low_traffic_cache_root() -> Path:
+    configured = str(os.environ.get("GROK_BROWSER_CACHE_DIR", "") or "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return Path(__file__).resolve().parents[2] / "data" / "browser-cache"
+
+
+def _low_traffic_cache_paths(url: str) -> tuple[Path, Path]:
+    digest = hashlib.sha256(str(url).encode("utf-8")).hexdigest()
+    root = _low_traffic_cache_root()
+    return root / f"{digest}.json", root / f"{digest}.bin"
+
+
+def _low_traffic_cache_lock(url: str) -> threading.Lock:
+    digest = hashlib.sha256(str(url).encode("utf-8")).hexdigest()
+    with _low_traffic_cache_locks_guard:
+        return _low_traffic_cache_locks.setdefault(digest, threading.Lock())
+
+
+def _prune_low_traffic_cache_once() -> None:
+    global _low_traffic_cache_pruned
+    with _low_traffic_cache_prune_lock:
+        if _low_traffic_cache_pruned:
+            return
+        _low_traffic_cache_pruned = True
+        root = _low_traffic_cache_root()
+        try:
+            bodies = [path for path in root.glob("*.bin") if path.is_file()]
+            total = sum(path.stat().st_size for path in bodies)
+            if total <= _LOW_TRAFFIC_CACHE_TOTAL_BYTES:
+                return
+            bodies.sort(key=lambda path: path.stat().st_mtime)
+            for body_path in bodies:
+                if total <= _LOW_TRAFFIC_CACHE_TOTAL_BYTES:
+                    break
+                try:
+                    size = body_path.stat().st_size
+                    body_path.unlink(missing_ok=True)
+                    body_path.with_suffix(".json").unlink(missing_ok=True)
+                    total -= size
+                except OSError:
+                    continue
+        except OSError:
+            return
+
+
+def _cached_response(url: str) -> tuple[int, dict[str, str], bytes] | None:
+    meta_path, body_path = _low_traffic_cache_paths(url)
+    try:
+        metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+        body = body_path.read_bytes()
+        if len(body) != int(metadata.get("size") or -1):
+            return None
+        headers = metadata.get("headers")
+        if not isinstance(headers, dict):
+            return None
+        return int(metadata.get("status") or 200), {
+            str(key): str(value) for key, value in headers.items()
+        }, body
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _store_cached_response(url: str, status: int, headers: dict, body: bytes) -> None:
+    if status != 200 or not body or len(body) > _LOW_TRAFFIC_CACHE_MAX_BYTES:
+        return
+    content_type = str(headers.get("content-type") or "").lower()
+    if not any(
+        marker in content_type
+        for marker in (
+            "javascript",
+            "text/css",
+            "font/",
+            "application/font",
+            "application/wasm",
+        )
+    ):
+        return
+    filtered_headers = {
+        str(key): str(value)
+        for key, value in headers.items()
+        if str(key).lower()
+        not in {"content-encoding", "content-length", "transfer-encoding"}
+    }
+    meta_path, body_path = _low_traffic_cache_paths(url)
+    try:
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        suffix = f".{os.getpid()}.{threading.get_ident()}.tmp"
+        temp_meta = meta_path.with_name(meta_path.name + suffix)
+        temp_body = body_path.with_name(body_path.name + suffix)
+        temp_body.write_bytes(body)
+        temp_meta.write_text(
+            json.dumps(
+                {"status": status, "headers": filtered_headers, "size": len(body)},
+                ensure_ascii=True,
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+        os.replace(temp_body, body_path)
+        os.replace(temp_meta, meta_path)
+    except OSError:
+        return
+
+
+def _install_low_traffic_routing(browser_context, log_callback=None) -> None:
+    if not low_traffic_enabled() or not hasattr(browser_context, "route"):
+        return
+    _prune_low_traffic_cache_once()
+
+    def handle(route, request):
+        url = str(getattr(request, "url", "") or "")
+        resource_type = str(getattr(request, "resource_type", "") or "")
+        method = str(getattr(request, "method", "GET") or "GET")
+        if low_traffic_should_block(url, resource_type):
+            route.abort()
+            return
+        request_headers = getattr(request, "headers", {}) or {}
+        if not low_traffic_should_cache(url, resource_type, method) or any(
+            str(key).lower() == "range" for key in request_headers
+        ):
+            route.continue_()
+            return
+        lock = _low_traffic_cache_lock(url)
+        with lock:
+            cached = _cached_response(url)
+            if cached is not None:
+                status, headers, body = cached
+                route.fulfill(status=status, headers=headers, body=body)
+                return
+            try:
+                response = route.fetch()
+                body = response.body()
+                headers = dict(response.headers or {})
+                status = int(response.status or 0)
+                _store_cached_response(url, status, headers, body)
+                route.fulfill(response=response, body=body)
+                return
+            except Exception:
+                route.continue_()
+
+    browser_context.route("**/*", handle)
+    if log_callback:
+        log_callback("[*] 低流量模式：已启用静态资源缓存与非业务媒体拦截")
 
 
 def allow_browser_launches() -> None:
@@ -573,12 +776,14 @@ def _is_valid_firefox_addon(path: str) -> bool:
     return os.path.isfile(os.path.join(root, "manifest.json"))
 
 
-def _ensure_default_addons_or_exclude():
+def _ensure_default_addons_or_exclude(disable_defaults: bool = False):
     """默认会加载 uBlock。若缓存目录损坏（缺 manifest），自动排除以免启动失败。"""
     try:
         from camoufox.addons import DefaultAddons, get_addon_path
     except Exception:
         return []
+    if disable_defaults:
+        return list(DefaultAddons)
     exclude = []
     for addon in DefaultAddons:
         addon_path = get_addon_path(addon.name)
@@ -631,7 +836,9 @@ def create_camoufox_options(unique_profile=True) -> dict:
 
     # 扩展（Camoufox 使用 addons 参数，加载已解压的 Firefox 扩展目录）
     # 默认会附带 uBlock；若缓存损坏则自动 exclude，避免 manifest.json missing。
-    exclude_addons = _ensure_default_addons_or_exclude()
+    exclude_addons = _ensure_default_addons_or_exclude(
+        disable_defaults=low_traffic_enabled()
+    )
     if exclude_addons:
         opts["exclude_addons"] = exclude_addons
     if _extension_path:
@@ -744,6 +951,8 @@ def start_browser(log_callback=None) -> Tuple[object, object]:
                 browser_context, lifecycle = _launch_cloakbrowser_context(opts)
             else:
                 browser_context, lifecycle = _launch_camoufox_context(opts)
+
+            _install_low_traffic_routing(browser_context, log_callback=log_callback)
 
             if _browser_launch_blocked.is_set():
                 raise RuntimeError("浏览器启动已被紧急终止操作阻止")

@@ -465,6 +465,12 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                 onCheckedChange={(value) => setField("browser_headless", value)}
               />
               <ToggleRow
+                title="低流量注册模式"
+                description="保持账号独立浏览器，复用 CDN 静态资源缓存并跳过媒体、字体及非注册必需的第三方资源"
+                checked={!!config.browser_low_traffic_mode}
+                onCheckedChange={(value) => setField("browser_low_traffic_mode", value)}
+              />
+              <ToggleRow
                 title="停止时关闭浏览器"
                 description="收到停止请求后清理当前浏览器实例"
                 checked={!!config.close_browser_on_stop}

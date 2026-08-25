@@ -314,6 +314,7 @@ DEFAULT_CONFIG = {
     ),
     "browser_headless": False,
     "browser_locale": "en-US",
+    "browser_low_traffic_mode": False,
     "close_browser_on_stop": False,
     "log_level": "info",
     "register_count": 1,
@@ -2770,6 +2771,10 @@ def get_browser_locale() -> str:
     return value if value in {"en-US", "zh-CN"} else "en-US"
 
 
+def is_browser_low_traffic_mode() -> bool:
+    return bool(config.get("browser_low_traffic_mode", False))
+
+
 def should_close_browser_after_run(user_stopped: bool) -> bool:
     """正常结束时非调试模式关闭；手动停止时严格以勾选项为准。"""
     if user_stopped:
@@ -2815,6 +2820,7 @@ def _wire_runtime_modules():
         is_headless=is_browser_headless,
         get_locale=get_browser_locale,
         get_engine=get_browser_engine,
+        is_low_traffic=is_browser_low_traffic_mode,
         extension_path=EXTENSION_PATH,
     )
     _rf.configure(

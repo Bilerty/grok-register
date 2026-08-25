@@ -29,6 +29,7 @@
   "browser_engine": "camoufox",
   "browser_headless": false,
   "browser_locale": "en-US",
+  "browser_low_traffic_mode": false,
   "close_browser_on_stop": false,
   "log_level": "info",
   "register_count": 1,
