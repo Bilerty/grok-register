@@ -385,6 +385,10 @@ function AccountDetails({
     ["密码", showPassword ? detail.password : maskSecret(detail.password)],
     ["状态", detail.status],
     ["风控标记", detail.bot_risk ? "是（该账号被打上机器人标记）" : "否"],
+    ["出口 IP", detail.exit_ip || "未记录"],
+    ...(detail.exit_ip_at_start && detail.exit_ip_at_start !== (detail.exit_ip || "")
+      ? ([["打开注册页时出口 IP", detail.exit_ip_at_start]] as Array<[string, string]>)
+      : []),
     ["CPA", detail.cpa_status],
     ["邮箱来源", emailProviderLabel(detail.provider)],
     ["NSFW", detail.nsfw_status],
@@ -425,6 +429,11 @@ function AccountDetails({
             <Badge variant="warning">
               <ShieldAlert className="mr-1 h-3 w-3" aria-hidden="true" />
               风控标记
+            </Badge>
+          ) : null}
+          {detail.exit_ip ? (
+            <Badge variant="outline" title={detail.exit_ip_at_start && detail.exit_ip_at_start !== detail.exit_ip ? `打开注册页时 ${detail.exit_ip_at_start}` : undefined}>
+              出口 {detail.exit_ip}
             </Badge>
           ) : null}
           <Badge variant={cpaVariant(detail.cpa_status)}>CPA {detail.cpa_status || "-"}</Badge>

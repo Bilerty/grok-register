@@ -260,12 +260,14 @@ class ReloginJobCoordinatorTests(unittest.TestCase):
                     }
                 },
                 config,
+                sso="REFRESHED-SSO",
                 log_callback=logs.append,
             )
 
         self.assertEqual(queued, event)
         enqueue.assert_called_once()
         self.assertEqual(enqueue.call_args.args[1]["email"], "ok@example.com")
+        self.assertEqual(enqueue.call_args.args[1]["sso"], "REFRESHED-SSO")
         self.assertTrue(any("已加入联动通知队列" in item for item in logs))
 
     def test_relogin_skips_grokiq_webhook_when_grok_build_was_not_imported(self):

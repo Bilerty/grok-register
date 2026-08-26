@@ -565,6 +565,12 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                 onCheckedChange={(value) => setField("browser_headless", value)}
               />
               <ToggleRow
+                title="低流量注册模式"
+                description="保持账号独立浏览器，复用 CDN 静态资源缓存并跳过媒体、字体及非注册必需的第三方资源"
+                checked={!!config.browser_low_traffic_mode}
+                onCheckedChange={(value) => setField("browser_low_traffic_mode", value)}
+              />
+              <ToggleRow
                 title="停止时关闭浏览器"
                 description="收到停止请求后清理当前浏览器实例"
                 checked={!!config.close_browser_on_stop}
@@ -654,10 +660,33 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                   <ConfigField {...fieldState} label="管理员密码" field="grok2api_remote_password" type="password" />
                   <ToggleRow
                     title="转换成功后自动导入"
-                    description="生成三种 Grok2API JSON 后立即登录远程管理端并逐个导入；导入结果单独记录"
+                    description="生成三种 Grok2API JSON 后立即登录远程管理端，并导入下方勾选的格式；导入结果单独记录"
                     checked={!!config.grok2api_auto_import}
                     onCheckedChange={(value) => setField("grok2api_auto_import", value)}
                   />
+                  <div className="grid gap-3">
+                    <ToggleRow
+                      title="导入 Build"
+                      description="默认导入 grok_build"
+                      checked={config.grok2api_auto_import_build !== false}
+                      onCheckedChange={(value) => setField("grok2api_auto_import_build", value)}
+                      disabled={!config.grok2api_auto_import}
+                    />
+                    <ToggleRow
+                      title="导入 Web"
+                      description="默认不导入 grok_web"
+                      checked={!!config.grok2api_auto_import_web}
+                      onCheckedChange={(value) => setField("grok2api_auto_import_web", value)}
+                      disabled={!config.grok2api_auto_import}
+                    />
+                    <ToggleRow
+                      title="导入 Console"
+                      description="默认不导入 grok_console"
+                      checked={!!config.grok2api_auto_import_console}
+                      onCheckedChange={(value) => setField("grok2api_auto_import_console", value)}
+                      disabled={!config.grok2api_auto_import}
+                    />
+                  </div>
                   <ToggleRow
                     title="三渠道推送同一代理"
                     description="导入后把 build/web/console 账号绑定到注册时使用的同一出口代理；目标平台已有同出口节点时直接复用，否则自动创建节点并写入该代理。总开关关闭时强制关闭。"

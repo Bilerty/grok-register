@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Dict, Mapping
 from urllib.parse import urlsplit
 
@@ -56,12 +57,23 @@ def enqueue_imported_account(
 
     if not bool(config.get("grokiq_webhook_enabled")):
         return None
+    sso = str(record.get("sso") or "").strip()
+    if not sso:
+        account_file = str(record.get("account_file") or "").strip()
+        if account_file:
+            try:
+                raw = Path(account_file).read_text(encoding="utf-8").strip()
+                _, separator, token = raw.rpartition("----")
+                sso = token.strip() if separator else ""
+            except (OSError, UnicodeError):
+                sso = ""
     event = repository.enqueue_grokiq_event(
         registration_id=int(record.get("id") or 0),
         email=str(record.get("email") or ""),
         bot_risk=bool(record.get("bot_risk")),
         bfs=record.get("bfs"),
         occurred_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        sso=sso,
     )
     grokiq_notifier.wake()
     return event
@@ -166,6 +178,7 @@ class GrokIQNotifier:
             "email": str(event.get("email") or ""),
             "bot_risk": bool(event.get("bot_risk")),
             "bfs": str(event.get("bfs") or ""),
+            "sso": str(event.get("sso") or ""),
             "occurred_at": str(event.get("occurred_at") or ""),
         }
         response_text = ""

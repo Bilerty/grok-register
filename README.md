@@ -173,7 +173,10 @@ Docker 配置中的授权目录建议保持：
   "grok2api_remote_url": "https://grok2api.example.com",
   "grok2api_remote_username": "admin",
   "grok2api_remote_password": "change-me",
-  "grok2api_auto_import": true
+  "grok2api_auto_import": true,
+  "grok2api_auto_import_build": true,
+  "grok2api_auto_import_web": false,
+  "grok2api_auto_import_console": false
 }
 ```
 
@@ -212,7 +215,7 @@ Windows 启动：
 | `email_provider` | 邮箱服务商 |
 | `register_count` | 注册数量 |
 | `register_workers` | 并发数量，默认 1 |
-| `proxy` | 注册和 OAuth 请求使用的 HTTP(S) 代理；支持 `http://host:port` 和 `http://user:password@host:port`，凭据中的特殊字符需使用 URL 百分号编码 |
+| `proxy` | 注册和 OAuth 请求使用的 HTTP(S) 代理；支持 `http://host:port` 和 `http://user:password@host:port`，凭据中的特殊字符需使用 URL 百分号编码。注册风控会记录浏览器识别到的出口 IP；下次若仍是该 IP，会重启浏览器换出口后再注册。风控名单在「账号中心 → 出口 IP 风控」查看，单账号出口 IP 在「账号中心 → 账号管理 → 查看」详情中 |
 | `browser_engine` | 浏览器后端：`camoufox`（默认）或 `cloakbrowser` |
 | `browser_headless` | 本机无头模式；Docker 中强制关闭 |
 | `cpa_auto_add` | 注册后生成 CPA 授权 |
@@ -225,6 +228,9 @@ Windows 启动：
 | `grok2api_remote_username` | 远程 Grok2API 管理员账号 |
 | `grok2api_remote_password` | 远程 Grok2API 管理员密码 |
 | `grok2api_auto_import` | JSON 生成后自动登录并导入远程 Grok2API |
+| `grok2api_auto_import_build` | 自动导入 grok_build，默认开启 |
+| `grok2api_auto_import_web` | 自动导入 grok_web，默认关闭 |
+| `grok2api_auto_import_console` | 自动导入 grok_console，默认关闭 |
 | `grokiq_webhook_enabled` | 导入 Grok Build 后发送账号已导入 Webhook |
 | `grokiq_webhook_url` | GrokIQ `account-imported` 接口地址 |
 | `grokiq_webhook_token` | Webhook 请求头 `x-grokiq-token` |

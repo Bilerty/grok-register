@@ -26,6 +26,7 @@ from curl_cffi import requests
 
 # 授权交换和导出逻辑集中在 integrations 包，编排层只负责调用。
 from backend.integrations import auth_exchange as _s2cpa
+from backend.integrations import exit_ip as _exit_ip
 from backend.integrations import grokiq as _grokiq
 from backend.integrations import grok2api_client as _grok2api
 from backend.integrations import sub2api_client as _sub2api
@@ -330,6 +331,7 @@ DEFAULT_CONFIG = {
     ),
     "browser_headless": False,
     "browser_locale": "en-US",
+    "browser_low_traffic_mode": True,
     "close_browser_on_stop": False,
     "log_level": "info",
     "register_count": 1,
@@ -356,6 +358,9 @@ DEFAULT_CONFIG = {
     # Grok2API 推送时三渠道（build/web/console）账号绑定同一个出口代理
     # （优先复用目标平台已有同出口节点，否则新建并绑定注册代理）
     "grok2api_same_proxy": False,
+    "grok2api_auto_import_build": True,
+    "grok2api_auto_import_web": False,
+    "grok2api_auto_import_console": False,
     # CPA 远程上传开关（独立于 cpa_auto_add；后者控制整个 SSO→auth 链路）
     "cpa_upload_enabled": True,
     # Sub2API：注册拿到 SSO 后直接上传 sso-to-oauth
@@ -450,6 +455,64 @@ class RegistrationRiskDenied(Exception):
         self.bot_flag_source = bot_flag_source
         self.bot_flag_details = str(bot_flag_details or "")
         self.risk_state = dict(risk_state or {})
+
+
+def prepare_registration_exit_ip(log_callback=None) -> str:
+    """打开注册页前，在浏览器里识别出口 IP，并尽量避开已风控出口。"""
+    return _exit_ip.ensure_unflagged_exit_ip(
+        store=get_registration_repository(),
+        proxy_enabled=bool(get_proxies()),
+        log_callback=log_callback,
+        restart=lambda: restart_browser(log_callback=log_callback),
+    )
+
+
+def remember_registration_risk_exit_ip(exc, email="", log_callback=None) -> bool:
+    """注册风控时再测一次浏览器出口 IP 再入库。
+
+    动态代理池可能在打开注册页后换出口，不能直接用注册前缓存的 IP。
+    """
+    if not getattr(exc, "bot_risk", False):
+        return False
+    started_ip = _exit_ip.current_start_exit_ip() or _exit_ip.current_exit_ip()
+    ip = _exit_ip.refresh_browser_exit_ip(
+        log_callback=log_callback,
+        reason="注册风控时",
+    ) or started_ip
+    if not ip:
+        if log_callback:
+            log_callback("[出口IP] 注册风控，但本次未识别到浏览器出口 IP，无法记录")
+        return False
+    try:
+        saved = get_registration_repository().remember_flagged_exit_ip(
+            ip,
+            email=email,
+            bot_flag_source=getattr(exc, "bot_flag_source", None),
+            failure_reason=str(exc),
+        )
+    except Exception as store_exc:
+        if log_callback:
+            log_callback(f"[出口IP] 记录风控出口 IP {ip} 失败: {store_exc}")
+        return False
+    if saved and log_callback:
+        if started_ip and started_ip != ip:
+            log_callback(
+                f"[出口IP] 注册风控，已记录出口 IP {ip}（打开注册页时是 {started_ip}）"
+            )
+        else:
+            log_callback(f"[出口IP] 注册风控，已记录出口 IP {ip}")
+    return bool(saved)
+
+
+def mark_registration_risk(cpa_detail, exc, *, email="", log_callback=None) -> None:
+    if isinstance(cpa_detail, dict):
+        cpa_detail.update(status="rejected", error=str(exc))
+    if apply_risk_bot_flag(cpa_detail, exc) and log_callback:
+        log_callback(
+            "[!] 注册风控标记 bot_risk"
+            f" botFlagSource={getattr(exc, 'bot_flag_source', None)!r}"
+        )
+    remember_registration_risk_exit_ip(exc, email=email, log_callback=log_callback)
 
 
 def apply_risk_bot_flag(cpa_detail: dict, exc) -> bool:
@@ -1563,6 +1626,7 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
     g2a_dir = str(config.get("grok2api_auth_dir", "") or "").strip()
     g2a_remote_configured = _grok2api.Grok2APIClient.is_configured(config)
     g2a_auto_import = bool(config.get("grok2api_auto_import", False))
+    g2a_import_formats = _grok2api.Grok2APIClient.auto_import_formats(config)
     _set_result(
         cpa_remote_status="ready" if remote_url and management_key else "not_configured",
         grok2api_remote_status="ready" if g2a_remote_configured else "not_configured",
@@ -1722,16 +1786,22 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
                 grok2api_auth_path_value = str(gpath)
                 auth_path_value = auth_path_value or str(gpath)
                 auth_entries.extend(f"Grok2API {kind}: {path}" for kind, path in gpaths.items())
-                if g2a_remote_configured and g2a_auto_import:
+                if g2a_remote_configured and g2a_import_formats:
                     _cpa_log(
                         "Grok2API 远程导入网络: 直连 -> "
-                        f"{str(config.get('grok2api_remote_url') or '').rstrip('/')}"
+                        f"{str(config.get('grok2api_remote_url') or '').rstrip('/')} "
+                        f"formats={','.join(g2a_import_formats)}"
                     )
                     remote_results = {}
                     remote_errors = {}
                     try:
                         with _grok2api.Grok2APIClient.from_config(config) as client:
-                            for format_name, format_path in gpaths.items():
+                            for format_name in g2a_import_formats:
+                                format_path = gpaths.get(format_name)
+                                if not format_path:
+                                    remote_errors[format_name] = "授权 JSON 不存在"
+                                    _cpa_log(f"Grok2API 远程导入跳过 [{format_name}]: 授权 JSON 不存在")
+                                    continue
                                 try:
                                     remote_result = client.import_auth_file(
                                         format_path, format_name=format_name
@@ -1751,7 +1821,10 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
                             if config.get("grok2api_same_proxy"):
                                 try:
                                     _bind_g2a_three_channel_same_proxy(
-                                        client, email, _cpa_log
+                                        client,
+                                        email,
+                                        _cpa_log,
+                                        formats=g2a_import_formats,
                                     )
                                 except Exception as same_proxy_exc:
                                     _cpa_log(
@@ -1786,6 +1859,8 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
                         },
                     )
                 elif g2a_remote_configured:
+                    if g2a_auto_import and not g2a_import_formats:
+                        _cpa_log("已开启 Grok2API 自动导入，但未勾选 Build / Web / Console")
                     _set_result(grok2api_remote_status="ready")
             except Exception as g2a_exc:
                 _cpa_log(f"Grok2API 写入失败: {g2a_exc}")
@@ -2804,6 +2879,10 @@ def get_browser_locale() -> str:
     return value if value in {"en-US", "zh-CN"} else "en-US"
 
 
+def is_browser_low_traffic_mode() -> bool:
+    return bool(config.get("browser_low_traffic_mode", False))
+
+
 def should_close_browser_after_run(user_stopped: bool) -> bool:
     """正常结束时非调试模式关闭；手动停止时严格以勾选项为准。"""
     if user_stopped:
@@ -2849,6 +2928,7 @@ def _wire_runtime_modules():
         is_headless=is_browser_headless,
         get_locale=get_browser_locale,
         get_engine=get_browser_engine,
+        is_low_traffic=is_browser_low_traffic_mode,
         extension_path=EXTENSION_PATH,
     )
     _rf.configure(
@@ -2860,6 +2940,7 @@ def _wire_runtime_modules():
         EmailDomainRejected=EmailDomainRejected,
         AccountRetryNeeded=AccountRetryNeeded,
         email_unavailable=email_registered_successfully,
+        prepare_exit_ip=prepare_registration_exit_ip,
     )
 
 # 页面步骤由 registration.signup_flow 实现。
@@ -2883,13 +2964,19 @@ def registration_log(message):
     print(line, flush=True)
 
 
-def _bind_g2a_three_channel_same_proxy(client, email, log_callback) -> None:
-    """Grok2API 三渠道同代理：build/web/console 账号绑定注册时使用的出口池。
+def _bind_g2a_three_channel_same_proxy(
+    client, email, log_callback, formats: tuple[str, ...] = ()
+) -> None:
+    """Grok2API 三渠道同代理：按本次实际导入的渠道绑定注册时使用的出口池。
 
     以注册代理模板的身份串（<platform>.{account}）与目标平台节点的
     proxyIdentity 比对：找到同池节点直接绑定；找不到则按渠道新建节点并
     写入注册代理模板；console 账号复用 web 节点。
     """
+    imported = set(formats or ())
+    if not imported:
+        log_callback("[G2A同代理] 本次没有导入任何格式，跳过三渠道同代理绑定")
+        return
     template = _pp.current_raw_url()
     proxy_url = _pp.get_pool().render(template)
     identity = proxy_identity_from_url(template)
@@ -2898,8 +2985,14 @@ def _bind_g2a_three_channel_same_proxy(client, email, log_callback) -> None:
     nodes = client.list_egress_nodes()
     plan = _grok2api.plan_same_proxy_bindings(nodes, identity)
 
+    required_scopes: set[str] = set()
+    if "grok_build" in imported:
+        required_scopes.add("grok_build")
+    if "grok_web" in imported or "grok_console" in imported:
+        required_scopes.add("grok_web")
+
     node_by_scope: dict[str, str] = {}
-    for scope in ("grok_build", "grok_web"):
+    for scope in sorted(required_scopes):
         node_id = plan.get(scope)
         if node_id:
             log_callback(f"[G2A同代理] {scope} 复用同池节点 #{node_id} (身份 {identity})")
@@ -2926,11 +3019,15 @@ def _bind_g2a_three_channel_same_proxy(client, email, log_callback) -> None:
             log_callback(f"[G2A同代理] {scope} 已创建节点 #{node_id} 并写入注册代理模板")
         node_by_scope[scope] = node_id
 
-    for provider, node_scope in (
-        ("grok_build", "grok_build"),
-        ("grok_web", "grok_web"),
-        ("grok_console", "grok_web"),
-    ):
+    bindings = []
+    if "grok_build" in imported:
+        bindings.append(("grok_build", "grok_build"))
+    if "grok_web" in imported:
+        bindings.append(("grok_web", "grok_web"))
+    if "grok_console" in imported:
+        bindings.append(("grok_console", "grok_web"))
+
+    for provider, node_scope in bindings:
         accounts = client.list_accounts(search=email, provider=provider)
         ids = [
             str(account.get("id") or "")
@@ -2986,7 +3083,16 @@ def run_registration(count):
     registration_log(f"[*] SSO→auth: {'开' if config.get('cpa_auto_add') else '关（账号将不计成功）'}" + (f"（{_token_mode_label}）" if config.get('cpa_auto_add') else ""))
     # TokenAuth 各下游上传开关摘要，便于开跑时一眼确认
     _cpa_up = "开" if config.get("cpa_upload_enabled", True) else "关"
-    _g2a_up = "开" if config.get("grok2api_auto_import", False) else "关"
+    _g2a_formats = _grok2api.Grok2APIClient.auto_import_formats(config)
+    if _g2a_formats:
+        _g2a_labels = {
+            "grok_build": "build",
+            "grok_web": "web",
+            "grok_console": "console",
+        }
+        _g2a_up = "开(" + "/".join(_g2a_labels[name] for name in _g2a_formats) + ")"
+    else:
+        _g2a_up = "关"
     _s2a_up = "开" if config.get("sub2api_enabled", False) else "关"
     registration_log(f"[*] [TokenAuth] CPA上传={_cpa_up} Grok2API导入={_g2a_up} Sub2API={_s2a_up}")
     traceback_log_lock = threading.Lock()
@@ -3015,14 +3121,19 @@ def run_registration(count):
         return kind
 
     def _persist_result(*, started_at, worker_id=0, **kwargs):
+        extra = dict(kwargs.get("extra") or {})
+        exit_ip = _exit_ip.current_exit_ip()
+        start_exit_ip = _exit_ip.current_start_exit_ip()
+        if exit_ip:
+            extra["exit_ip"] = exit_ip
+        if start_exit_ip and start_exit_ip != exit_ip:
+            extra["exit_ip_at_start"] = start_exit_ip
         trace_text = ""
         if str(kwargs.get("status") or "").strip().lower() == "failure":
             trace_text = current_exception_traceback()
             if trace_text:
-                extra = dict(kwargs.get("extra") or {})
                 extra["exception_traceback"] = trace_text
                 extra["exception_type"] = trace_text.rstrip().splitlines()[-1]
-                kwargs["extra"] = extra
                 signature = hash(trace_text)
                 with traceback_log_lock:
                     should_log_traceback = signature not in logged_traceback_signatures
@@ -3033,6 +3144,8 @@ def run_registration(count):
                         "[异常堆栈]\n"
                         + current_exception_traceback(TRACEBACK_LOG_MAX_CHARS)
                     )
+        if extra:
+            kwargs["extra"] = extra
         if (
             str(kwargs.get("status") or "").strip().lower() == "failure"
             and str(kwargs.get("failure_type") or "") != FAIL_CPA
@@ -3307,11 +3420,12 @@ def run_registration(count):
                             _pp.get_pool().report_failure(
                                 _pp.current_raw_url(), reason="registration_risk"
                             )
-                            if apply_risk_bot_flag(cpa_detail, exc):
-                                registration_log(
-                                    f"[W{wid+1}] [!] 注册风控标记 bot_risk"
-                                    f" botFlagSource={getattr(exc, 'bot_flag_source', None)!r}"
-                                )
+                            mark_registration_risk(
+                                cpa_detail,
+                                exc,
+                                email=current_attempt_email(email, exc),
+                                log_callback=lambda m: registration_log(f"[W{wid+1}] {m}"),
+                            )
                         fail_email = current_attempt_email(email, exc)
                         email_disable_detail = maybe_disable_outlookemail_for_consumed_failure(
                             kind,
@@ -3668,11 +3782,12 @@ def run_registration(count):
                     _pp.get_pool().report_failure(
                         _pp.current_raw_url(), reason="registration_risk"
                     )
-                    if apply_risk_bot_flag(cpa_detail, exc):
-                        registration_log(
-                            "[!] 注册风控标记 bot_risk"
-                            f" botFlagSource={getattr(exc, 'bot_flag_source', None)!r}"
-                        )
+                    mark_registration_risk(
+                        cpa_detail,
+                        exc,
+                        email=current_attempt_email(email, exc),
+                        log_callback=registration_log,
+                    )
                 fail_email = current_attempt_email(email, exc)
                 email_disable_detail = maybe_disable_outlookemail_for_consumed_failure(
                     kind,

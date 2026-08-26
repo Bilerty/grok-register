@@ -22,6 +22,7 @@ def enqueue_relogin_grokiq_notification(
     cpa_detail: Dict[str, Any],
     config: Any,
     *,
+    sso: str = "",
     log_callback: Any = None,
 ) -> Dict[str, Any] | None:
     """重登导入 grok_build 成功后，走与注册相同的 GrokIQ Webhook 入队。"""
@@ -33,7 +34,9 @@ def enqueue_relogin_grokiq_notification(
     if not records:
         return None
     try:
-        event = grokiq.enqueue_imported_account(store, records[0], config)
+        record = dict(records[0])
+        record["sso"] = str(sso or "").strip()
+        event = grokiq.enqueue_imported_account(store, record, config)
     except Exception as exc:
         if log_callback:
             log_callback(f"[GrokIQ] 账号已导入 Grok2API，但联动通知入队失败: {exc}")
@@ -450,6 +453,7 @@ class ReloginJobCoordinator:
                 account_id,
                 cpa_detail,
                 gr.config,
+                sso=sso,
                 log_callback=log,
             )
             return {"error": "", **risk_outcome_fields()}

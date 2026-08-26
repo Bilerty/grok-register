@@ -13,6 +13,7 @@ import { ReloginHistoryPage } from "@/pages/ReloginHistory";
 import { CredentialsPage } from "@/pages/Credentials";
 import { ConfigFilePage } from "@/pages/ConfigFile";
 import { SsoCheckHistoryPage, SsoCheckPage } from "@/pages/SsoCheck";
+import { FlaggedExitIpsPage } from "@/pages/FlaggedExitIps";
 
 export default function App() {
   const [jobRunning, setJobRunning] = useState(false);
@@ -95,6 +96,7 @@ export default function App() {
         <Route path="accounts/sso-check" element={<SsoCheckPage />} />
         <Route path="accounts/sso-check/history" element={<SsoCheckHistoryPage />} />
         <Route path="accounts/sso-check/history/:runId" element={<SsoCheckHistoryPage />} />
+        <Route path="accounts/exit-ips" element={<FlaggedExitIpsPage />} />
         <Route path="accounts/relogin" element={<ReloginPage />} />
         <Route path="accounts/relogin/history" element={<ReloginHistoryPage />} />
         <Route path="accounts/relogin/history/:runId" element={<ReloginHistoryPage />} />

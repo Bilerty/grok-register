@@ -422,12 +422,13 @@ export function ReloginPage() {
         ) : candidates.length ? (
           <>
             <div className="hidden overflow-x-auto md:block">
-              <table className="w-full min-w-[920px] text-left text-sm">
+              <table className="w-full min-w-[1080px] text-left text-sm">
                 <thead className="border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
                   <tr>
                     <th className="w-12 px-4 py-3"><span className="sr-only">选择账号</span></th>
                     <th className="px-4 py-3 font-medium">账号</th>
                     <th className="px-4 py-3 font-medium">邮箱来源</th>
+                    <th className="w-[160px] px-4 py-3 font-medium">创建时间</th>
                     <th className="px-4 py-3 font-medium">登录凭据</th>
                     <th className="px-4 py-3 font-medium">SSO 风控</th>
                     <th className="px-4 py-3 font-medium">授权文件</th>
@@ -446,6 +447,7 @@ export function ReloginPage() {
                         />
                       </td>
                       <td className="px-4 py-3"><EmailProviderLabel provider={item.provider} /></td>
+                      <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-500">{item.finished_at || item.started_at || "未记录"}</td>
                       <td className="px-4 py-3"><Badge variant={item.email && item.password ? "success" : "warning"}>{item.email && item.password ? "有效" : "缺失"}</Badge></td>
                       {(() => { const risk = accountRiskStatus(item); return <td className="px-4 py-3"><Badge variant={risk.variant}>{risk.label}</Badge></td>; })()}
                       <td className="px-4 py-3"><div className="flex flex-wrap gap-1.5"><Badge variant={item.cpa_auth_available ? "success" : "secondary"}>CPA {item.cpa_auth_available ? "有效" : "缺失"}</Badge><Badge variant={item.grok2api_auth_available ? "success" : "secondary"}>G2A {item.grok2api_auth_available ? "有效" : "缺失"}</Badge></div></td>
@@ -469,6 +471,7 @@ export function ReloginPage() {
                       />
                       <EmailProviderIcon provider={item.provider} />
                     </div>
+                    <div className="mt-1 text-xs text-slate-500">创建于 {item.finished_at || item.started_at || "未记录"}</div>
                     <div className="mt-2 grid grid-cols-2 gap-2 text-xs"><div className="rounded-lg bg-slate-50 px-3 py-2"><div className="text-slate-400">登录凭据</div><div className="mt-1"><Badge variant={item.email && item.password ? "success" : "warning"}>{item.email && item.password ? "有效" : "缺失"}</Badge></div></div><div className="rounded-lg bg-slate-50 px-3 py-2"><div className="text-slate-400">SSO 风控</div><div className="mt-1"><Badge variant={accountRiskStatus(item).variant}>{accountRiskStatus(item).label}</Badge></div></div></div>
                     <div className="flex flex-wrap gap-1.5"><Badge variant={item.cpa_auth_available ? "success" : "secondary"}>CPA {item.cpa_auth_available ? "有效" : "缺失"}</Badge><Badge variant={item.grok2api_auth_available ? "success" : "secondary"}>G2A {item.grok2api_auth_available ? "有效" : "缺失"}</Badge><Badge variant={reloginOutcome(item).variant}>{reloginOutcome(item).label}</Badge></div>
                   </div>

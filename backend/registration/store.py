@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import datetime as _datetime
+import ipaddress
 import json
 import os
 import sqlite3
@@ -149,6 +150,7 @@ class RegistrationRepository:
                     registration_id INTEGER NOT NULL UNIQUE,
                     event_type TEXT NOT NULL DEFAULT 'grok2api.account_imported',
                     email TEXT NOT NULL,
+                    sso TEXT NOT NULL DEFAULT '',
                     bot_risk INTEGER NOT NULL DEFAULT 0,
                     bfs TEXT NOT NULL DEFAULT '',
                     occurred_at TEXT NOT NULL DEFAULT '',
@@ -173,6 +175,14 @@ class RegistrationRepository:
                 str(row["name"])
                 for row in conn.execute("PRAGMA table_info(registration_results)").fetchall()
             }
+            outbox_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(grokiq_outbox)").fetchall()
+            }
+            if "sso" not in outbox_columns:
+                conn.execute(
+                    "ALTER TABLE grokiq_outbox ADD COLUMN sso TEXT NOT NULL DEFAULT ''"
+                )
             migrations = {
                 "cpa_auth_path": "TEXT NOT NULL DEFAULT ''",
                 "grok2api_auth_path": "TEXT NOT NULL DEFAULT ''",
@@ -251,7 +261,26 @@ class RegistrationRepository:
                 """,
                 (self.now_text(),),
             )
-            conn.execute("PRAGMA user_version = 7")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS flagged_exit_ips (
+                    ip TEXT PRIMARY KEY,
+                    first_seen_at TEXT NOT NULL DEFAULT '',
+                    last_seen_at TEXT NOT NULL DEFAULT '',
+                    hit_count INTEGER NOT NULL DEFAULT 1,
+                    last_email TEXT NOT NULL DEFAULT '',
+                    last_bot_flag_source TEXT NOT NULL DEFAULT '',
+                    last_failure_reason TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_flagged_exit_ips_last_seen
+                    ON flagged_exit_ips(last_seen_at)
+                """
+            )
+            conn.execute("PRAGMA user_version = 8")
 
     def add_result(self, record: Dict[str, Any]) -> int:
         now = self.now_text()
@@ -332,6 +361,7 @@ class RegistrationRepository:
         bot_risk: bool,
         bfs: Any,
         occurred_at: str,
+        sso: str = "",
     ) -> Dict[str, Any]:
         """Create one durable, idempotent account-imported notification."""
 
@@ -348,16 +378,17 @@ class RegistrationRepository:
             conn.execute(
                 """
                 INSERT OR IGNORE INTO grokiq_outbox (
-                    event_id, registration_id, event_type, email, bot_risk, bfs,
+                    event_id, registration_id, event_type, email, sso, bot_risk, bfs,
                     occurred_at, status, attempts,
                     next_attempt_at, created_at, updated_at
-                ) VALUES (?, ?, 'grok2api.account_imported', ?, ?, ?, ?,
+                ) VALUES (?, ?, 'grok2api.account_imported', ?, ?, ?, ?, ?,
                           'pending', 0, ?, ?, ?)
                 """,
                 (
                     event_id,
                     normalized_id,
                     normalized_email,
+                    str(sso or "").strip(),
                     1 if bot_risk else 0,
                     "" if bfs is None else str(bfs),
                     str(occurred_at or ""),
@@ -366,6 +397,16 @@ class RegistrationRepository:
                     now_text,
                 ),
             )
+            normalized_sso = str(sso or "").strip()
+            if normalized_sso:
+                conn.execute(
+                    """
+                    UPDATE grokiq_outbox
+                    SET sso = ?, status = 'pending', next_attempt_at = ?, updated_at = ?
+                    WHERE event_id = ? AND sso != ?
+                    """,
+                    (normalized_sso, now_epoch, now_text, event_id, normalized_sso),
+                )
             row = conn.execute(
                 "SELECT * FROM grokiq_outbox WHERE event_id = ?",
                 (event_id,),
@@ -497,9 +538,10 @@ class RegistrationRepository:
                     """,
                     batch,
                 ).fetchall()
-                result.update(
-                    {int(row["registration_id"]): dict(row) for row in rows}
-                )
+                for row in rows:
+                    item = dict(row)
+                    item.pop("sso", None)
+                    result[int(row["registration_id"])] = item
         return result
 
     def has_success(self, email: str) -> bool:
@@ -970,6 +1012,105 @@ class RegistrationRepository:
                 values,
             )
             return bool(cursor.rowcount)
+
+
+    @staticmethod
+    def _normalize_exit_ip(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        try:
+            return ipaddress.ip_address(text).compressed
+        except ValueError:
+            return ""
+
+    def remember_flagged_exit_ip(
+        self,
+        ip: str,
+        *,
+        email: str = "",
+        bot_flag_source: Any = None,
+        failure_reason: str = "",
+    ) -> bool:
+        """记录一次注册风控对应的浏览器出口 IP。"""
+        normalized = self._normalize_exit_ip(ip)
+        if not normalized:
+            return False
+        now = self.now_text()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO flagged_exit_ips (
+                    ip, first_seen_at, last_seen_at, hit_count,
+                    last_email, last_bot_flag_source, last_failure_reason
+                )
+                VALUES (?, ?, ?, 1, ?, ?, ?)
+                ON CONFLICT(ip) DO UPDATE SET
+                    last_seen_at = excluded.last_seen_at,
+                    hit_count = hit_count + 1,
+                    last_email = CASE
+                        WHEN excluded.last_email = '' THEN last_email
+                        ELSE excluded.last_email
+                    END,
+                    last_bot_flag_source = CASE
+                        WHEN excluded.last_bot_flag_source = '' THEN last_bot_flag_source
+                        ELSE excluded.last_bot_flag_source
+                    END,
+                    last_failure_reason = CASE
+                        WHEN excluded.last_failure_reason = '' THEN last_failure_reason
+                        ELSE excluded.last_failure_reason
+                    END
+                """,
+                (
+                    normalized,
+                    now,
+                    now,
+                    str(email or "").strip(),
+                    "" if bot_flag_source is None else str(bot_flag_source),
+                    str(failure_reason or "").strip(),
+                ),
+            )
+        return True
+
+    def is_flagged_exit_ip(self, ip: str) -> bool:
+        normalized = self._normalize_exit_ip(ip)
+        if not normalized:
+            return False
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM flagged_exit_ips WHERE ip = ?",
+                (normalized,),
+            ).fetchone()
+        return row is not None
+
+    def list_flagged_exit_ips(self, limit: int = 200) -> List[Dict[str, Any]]:
+        try:
+            capped = max(1, min(int(limit or 200), 1000))
+        except (TypeError, ValueError):
+            capped = 200
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT ip, first_seen_at, last_seen_at, hit_count,
+                       last_email, last_bot_flag_source, last_failure_reason
+                FROM flagged_exit_ips
+                ORDER BY last_seen_at DESC, ip
+                LIMIT ?
+                """,
+                (capped,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_flagged_exit_ip(self, ip: str) -> bool:
+        normalized = self._normalize_exit_ip(ip)
+        if not normalized:
+            return False
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM flagged_exit_ips WHERE ip = ?",
+                (normalized,),
+            )
+        return bool(cursor.rowcount)
 
     def update_bot_risk_by_email(
         self,
