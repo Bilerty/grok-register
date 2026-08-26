@@ -127,10 +127,19 @@ _LOW_TRAFFIC_BLOCKED_HOSTS = {
 }
 _LOW_TRAFFIC_MEDIA_HOSTS = {"media.x.ai"}
 _LOW_TRAFFIC_VISUAL_HOSTS = {"cdn.grok.com", "grok.com", "www.grok.com"}
+# accounts.x.ai 的 bundle 虽然使用哈希文件名，但页面运行时还依赖同批次
+# 的文档、动态配置和风控状态；跨 profile 共享可能导致提交阶段卡住。因此
+# 只保留已验证安全的 cdn.grok.com 静态缓存。
 _LOW_TRAFFIC_CACHE_HOSTS = {"cdn.grok.com"}
 _LOW_TRAFFIC_CACHE_TYPES = {"script", "stylesheet", "font"}
 _LOW_TRAFFIC_CACHE_MAX_BYTES = 24 * 1024 * 1024
 _LOW_TRAFFIC_CACHE_TOTAL_BYTES = 512 * 1024 * 1024
+_LOW_TRAFFIC_CACHE_EXCLUDED_HEADERS = {
+    "content-encoding",
+    "content-length",
+    "transfer-encoding",
+    "set-cookie",
+}
 _low_traffic_cache_pruned = False
 _low_traffic_cache_prune_lock = threading.Lock()
 
@@ -234,7 +243,9 @@ def low_traffic_should_cache(url: str, resource_type: str, method: str = "GET") 
     except ValueError:
         return False
     kind = str(resource_type or "").strip().lower()
-    return host in _LOW_TRAFFIC_CACHE_HOSTS and kind in _LOW_TRAFFIC_CACHE_TYPES
+    if host not in _LOW_TRAFFIC_CACHE_HOSTS or kind not in _LOW_TRAFFIC_CACHE_TYPES:
+        return False
+    return True
 
 
 def _low_traffic_cache_root() -> Path:
@@ -294,7 +305,9 @@ def _cached_response(url: str) -> tuple[int, dict[str, str], bytes] | None:
         if not isinstance(headers, dict):
             return None
         return int(metadata.get("status") or 200), {
-            str(key): str(value) for key, value in headers.items()
+            str(key): str(value)
+            for key, value in headers.items()
+            if str(key).lower() not in _LOW_TRAFFIC_CACHE_EXCLUDED_HEADERS
         }, body
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return None
@@ -318,8 +331,7 @@ def _store_cached_response(url: str, status: int, headers: dict, body: bytes) ->
     filtered_headers = {
         str(key): str(value)
         for key, value in headers.items()
-        if str(key).lower()
-        not in {"content-encoding", "content-length", "transfer-encoding"}
+        if str(key).lower() not in _LOW_TRAFFIC_CACHE_EXCLUDED_HEADERS
     }
     meta_path, body_path = _low_traffic_cache_paths(url)
     try:
@@ -381,6 +393,65 @@ def _install_low_traffic_routing(browser_context, log_callback=None) -> None:
     browser_context.route("**/*", handle)
     if log_callback:
         log_callback("[*] 低流量模式：已启用静态资源缓存与非业务媒体拦截")
+
+
+def _install_accounts_resource_diagnostics(browser_context, log_callback=None) -> None:
+    """在调试模式下记录 accounts.x.ai 隧道内的真实资源明细。
+
+    代理层只能看到 CONNECT 主机，无法区分隧道中的 JS/CSS/API 请求。
+    Playwright 的 requestfinished 事件可以在不读取响应体、不改变请求路径的
+    前提下记录资源类型、状态和网络字节数，帮助定位约 1.5 MB 的重复下载。
+    该监听器仅在调试模式且存在日志回调时安装，生产运行不会增加额外日志或
+    请求。
+    """
+    if (
+        not _debug()
+        or not log_callback
+        or browser_context is None
+        or not hasattr(browser_context, "on")
+    ):
+        return
+
+    state = {"total": 0, "seen": 0}
+
+    def handle(request):
+        try:
+            url = str(getattr(request, "url", "") or "")
+            host = (urlparse(url).hostname or "").lower()
+            if host != "accounts.x.ai":
+                return
+            resource_type = str(getattr(request, "resource_type", "") or "unknown")
+            response = request.response()
+            status = int(getattr(response, "status", 0) or 0) if response else 0
+            headers = getattr(response, "headers", {}) or {}
+            content_length = str(headers.get("content-length") or "")
+            try:
+                sizes = request.sizes() or {}
+                body_size = int(sizes.get("responseBodySize") or 0)
+            except Exception:
+                body_size = 0
+            if body_size <= 0:
+                try:
+                    body_size = int(content_length or 0)
+                except (TypeError, ValueError):
+                    body_size = 0
+            state["total"] += body_size
+            state["seen"] += 1
+            parsed = urlparse(url)
+            safe_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+            log_callback(
+                "[Debug] accounts.x.ai 资源: "
+                f"type={resource_type} status={status} bytes={body_size} "
+                f"url={safe_url} | cumulative={state['total']} bytes "
+                f"({state['seen']} requests)"
+            )
+        except Exception as exc:
+            log_callback(f"[Debug] accounts.x.ai 资源记录失败: {type(exc).__name__}: {exc}")
+
+    try:
+        browser_context.on("requestfinished", handle)
+    except Exception as exc:
+        log_callback(f"[Debug] accounts.x.ai 资源监听安装失败: {type(exc).__name__}: {exc}")
 
 
 def allow_browser_launches() -> None:
@@ -953,6 +1024,9 @@ def start_browser(log_callback=None) -> Tuple[object, object]:
                 browser_context, lifecycle = _launch_camoufox_context(opts)
 
             _install_low_traffic_routing(browser_context, log_callback=log_callback)
+            _install_accounts_resource_diagnostics(
+                browser_context, log_callback=log_callback
+            )
 
             if _browser_launch_blocked.is_set():
                 raise RuntimeError("浏览器启动已被紧急终止操作阻止")
