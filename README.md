@@ -284,8 +284,8 @@ cd front && npm run build
 
 服务启动后会读取根目录 `VERSION`，立即查询一次 GitHub Releases，之后每
 1 小时复查。发现高于当前版本的正式 Release 时，管理控制台会自动弹出更新提示，
-展示版本号、更新说明和 Release 链接；关闭后同一版本不再重复弹出，更高版本
-发布后会重新提示。
+展示版本号、Markdown 更新说明和 Release 链接；关闭后同一版本不再重复弹出，更高版本
+发布后会重新提示。Release 正文按 GitHub Markdown 渲染，标题、列表、链接和代码块会显示在弹窗里。
 
 无需发布测试版本也可以预览弹窗：登录管理控制台后访问
 `/overview?preview-update=1`。预览关闭状态不会写入正式版本的忽略记录，刷新页面
