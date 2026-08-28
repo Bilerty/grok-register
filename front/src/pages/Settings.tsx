@@ -338,7 +338,21 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
     }
   };
 
-  const meta = SECTION_META[section];
+  const isRegistrationWorkspace = section === "registration" || section === "tokenauth";
+  const [registrationTab, setRegistrationTab] = useState<"general" | "tokenauth">(() =>
+    section === "tokenauth" || searchParams.get("tab") === "tokenauth" ? "tokenauth" : "general"
+  );
+  const [generalTab, setGeneralTab] = useState<"task" | "browser" | "behavior">("task");
+  const [authTab, setAuthTab] = useState<"conversion" | "cpa" | "grok2api" | "sub2api">("conversion");
+  const meta = isRegistrationWorkspace ? SECTION_META.registration : SECTION_META[section];
+
+  const selectRegistrationTab = (tab: "general" | "tokenauth") => {
+    setRegistrationTab(tab);
+    const next = new URLSearchParams(searchParams);
+    if (tab === "tokenauth") next.set("tab", "tokenauth");
+    else next.delete("tab");
+    window.history.replaceState(null, "", `${window.location.pathname}${next.toString() ? `?${next}` : ""}`);
+  };
 
   return (
     <div className="space-y-5 sm:space-y-6">
@@ -359,8 +373,37 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
         }
       />
 
+      {isRegistrationWorkspace ? (
+        <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-sky-50/70 p-2 shadow-sm">
+          <div className="grid grid-cols-2 gap-1 rounded-xl bg-slate-100/80 p-1" role="tablist" aria-label="注册设置分类">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={registrationTab === "general"}
+              onClick={() => selectRegistrationTab("general")}
+              className={`flex items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-sm font-medium transition ${registrationTab === "general" ? "bg-white text-sky-700 shadow-sm ring-1 ring-sky-100" : "text-slate-500 hover:bg-white/70 hover:text-slate-700"}`}
+            >
+              <Settings2 className="h-4 w-4" aria-hidden="true" />
+              基础注册
+              <span className="hidden text-xs font-normal text-slate-400 sm:inline">邮箱、代理与浏览器</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={registrationTab === "tokenauth"}
+              onClick={() => selectRegistrationTab("tokenauth")}
+              className={`flex items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-sm font-medium transition ${registrationTab === "tokenauth" ? "bg-white text-violet-700 shadow-sm ring-1 ring-violet-100" : "text-slate-500 hover:bg-white/70 hover:text-slate-700"}`}
+            >
+              <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+              授权转换
+              <span className="hidden text-xs font-normal text-slate-400 sm:inline">CPA、Grok2API 与 Sub2API</span>
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       <div className="space-y-4">
-        {section === "registration" ? (
+        {isRegistrationWorkspace && registrationTab === "general" ? (
         <Card>
           <CardHeader className="flex-row items-start gap-3">
             <SectionIcon><Settings2 className="h-5 w-5" aria-hidden="true" /></SectionIcon>
@@ -369,7 +412,29 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
               <CardDescription>邮箱来源、代理、数量、并发和浏览器运行方式。</CardDescription>
             </div>
           </CardHeader>
-          <CardContent className="grid gap-4 sm:grid-cols-2">
+          <CardContent className="space-y-5">
+            <div className="grid grid-cols-3 gap-1 rounded-xl border bg-muted/30 p-1" role="tablist" aria-label="基础注册设置分类">
+              {([
+                ["task", "注册任务", "邮箱、数量与并发"],
+                ["browser", "网络浏览器", "代理、后端与语言"],
+                ["behavior", "运行策略", "流量、调试与清理"],
+              ] as const).map(([value, label, hint]) => (
+                <button
+                  key={value}
+                  type="button"
+                  role="tab"
+                  aria-selected={generalTab === value}
+                  onClick={() => setGeneralTab(value)}
+                  className={`rounded-lg px-2 py-2 text-center transition ${generalTab === value ? "bg-white text-sky-700 shadow-sm ring-1 ring-slate-200" : "text-muted-foreground hover:bg-white/70 hover:text-foreground"}`}
+                >
+                  <span className="block text-sm font-medium">{label}</span>
+                  <span className="mt-0.5 hidden text-[11px] sm:block">{hint}</span>
+                </button>
+              ))}
+            </div>
+
+            {generalTab === "task" ? (
+            <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2 sm:col-span-2">
               <Label htmlFor="email_provider">邮箱服务商</Label>
               <Select
@@ -401,14 +466,6 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                 <ArrowRight className="h-4 w-4" aria-hidden="true" />
               </Link>
             </div>
-            <ConfigField
-              {...fieldState}
-              label="网络代理"
-              field="proxy"
-              type="password"
-              placeholder="http://user:password@host:port"
-              helper="支持无认证或用户名/密码认证的 HTTP(S) 代理；凭据含 @、:、/、#、% 等特殊字符时请使用 URL 百分号编码，例如 @ 写成 %40。注册浏览器与 xAI/OAuth 请求会共用此代理。"
-            />
             <ConfigField {...fieldState}
               label="账号间隔（秒）"
               field="account_interval"
@@ -418,6 +475,21 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
             <ConfigField {...fieldState} label="注册数量" field="register_count" type="number" />
             <ConfigField {...fieldState} label="并发浏览器数" field="register_workers" type="number" />
             <ConfigField {...fieldState} label="日志级别" field="log_level" placeholder="info（普通）/ debug（详细）" />
+            </div>
+            ) : null}
+
+            {generalTab === "browser" ? (
+            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <ConfigField
+                {...fieldState}
+                label="网络代理"
+                field="proxy"
+                type="password"
+                placeholder="http://user:password@host:port"
+                helper="支持无认证或用户名/密码认证的 HTTP(S) 代理；凭据含 @、:、/、#、% 等特殊字符时请使用 URL 百分号编码，例如 @ 写成 %40。注册浏览器与 xAI/OAuth 请求会共用此代理。"
+              />
+            </div>
             <div className="min-w-0 space-y-2">
               <Label htmlFor="browser_engine">浏览器后端</Label>
               <Select
@@ -445,6 +517,10 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                 固定注册页面语言，不跟随代理出口自动切换。
               </p>
             </div>
+            </div>
+            ) : null}
+
+            {generalTab === "behavior" ? (
             <div className="space-y-3 sm:col-span-2">
               <ToggleRow
                 title="注册后开启 NSFW"
@@ -477,13 +553,36 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                 onCheckedChange={(value) => setField("close_browser_on_stop", value)}
               />
             </div>
+            ) : null}
           </CardContent>
         </Card>
         ) : null}
 
         {/* TokenAuth：授权转换 + CPA / Grok2API / Sub2API 三目标 */}
-        {section === "tokenauth" || section === "cpa" || section === "grok2api" ? (
+        {isRegistrationWorkspace && registrationTab === "tokenauth" ? (
         <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-2 rounded-2xl border bg-card p-2 shadow-sm sm:grid-cols-4" role="tablist" aria-label="授权转换设置分类">
+            {([
+              ["conversion", "转换策略", "SSO 与风控"],
+              ["cpa", "CPA", "本地与远程"],
+              ["grok2api", "Grok2API", "导入与联动"],
+              ["sub2api", "Sub2API", "SSO 直传"],
+            ] as const).map(([value, label, hint]) => (
+              <button
+                key={value}
+                type="button"
+                role="tab"
+                aria-selected={authTab === value}
+                onClick={() => setAuthTab(value)}
+                className={`rounded-xl border px-3 py-2.5 text-left transition ${authTab === value ? "border-violet-200 bg-violet-50 text-violet-700 shadow-sm" : "border-transparent bg-muted/30 text-muted-foreground hover:border-slate-200 hover:bg-white hover:text-foreground"}`}
+              >
+                <span className="block text-sm font-semibold">{label}</span>
+                <span className="mt-0.5 block text-[11px] opacity-75">{hint}</span>
+              </button>
+            ))}
+          </div>
+
+          {authTab === "conversion" ? (
           <Card>
             <CardHeader className="flex-row items-start gap-3">
               <SectionIcon><ShieldCheck className="h-5 w-5" aria-hidden="true" /></SectionIcon>
@@ -529,8 +628,10 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
               </div>
             </CardContent>
           </Card>
+          ) : null}
 
           <div className="grid gap-4">
+            {authTab === "cpa" ? (
             <Card>
               <CardHeader>
                 <CardTitle>CPA 目标</CardTitle>
@@ -548,7 +649,9 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                 <ConfigField {...fieldState} label="远程管理密钥" field="cpa_management_key" type="password" />
               </CardContent>
             </Card>
+            ) : null}
 
+            {authTab === "grok2api" ? (
             <div className="grid gap-4 lg:grid-cols-2">
               <Card>
                 <CardHeader>
@@ -638,7 +741,9 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                 </CardContent>
               </Card>
             </div>
+            ) : null}
 
+            {authTab === "sub2api" ? (
             <Card>
               <CardHeader>
                 <CardTitle>Sub2API 目标</CardTitle>
@@ -709,6 +814,7 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                 </p>
               </CardContent>
             </Card>
+            ) : null}
           </div>
         </div>
         ) : null}
