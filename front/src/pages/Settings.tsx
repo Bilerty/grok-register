@@ -509,6 +509,14 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                   onCheckedChange={(value) => setField("sso_detailed_risk_check", value)}
                 />
               </div>
+              <div className="sm:col-span-2">
+                <ToggleRow
+                  title="注册后检查 SSO 风控"
+                  description="注册拿到 SSO 后复查 grok.com botFlag；上游未发送该字段时会进行多次等待，默认关闭"
+                  checked={!!config.cpa_registration_risk_check}
+                  onCheckedChange={(value) => setField("cpa_registration_risk_check", value)}
+                />
+              </div>
               <div className="space-y-2 sm:col-span-2">
                 <Label htmlFor="cpa_token_mode">授权转换方式</Label>
                 <Select

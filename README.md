@@ -220,6 +220,7 @@ Windows 启动：
 | `browser_headless` | 本机无头模式；Docker 中强制关闭 |
 | `cpa_auto_add` | 注册后生成 CPA 授权 |
 | `sso_detailed_risk_check` | 获取 SSO 后详细检查账号页；`botFlagSource=0` 正常，非 `0` 异常，缺失时自动重试 |
+| `cpa_registration_risk_check` | 注册获取 SSO 后复查 grok.com `botFlag`；默认关闭，开启后缺失字段会按 0 / 2 / 4 / 8 秒自动复查 |
 | `cpa_auth_dir` | CPA JSON 保存目录 |
 | `cpa_remote_url` | CPA Management API 地址 |
 | `cpa_management_key` | CPA 管理密钥 |

@@ -12,6 +12,7 @@ class RegistrationRiskTests(unittest.TestCase):
             {
                 "cpa_auto_add": True,
                 "sso_detailed_risk_check": False,
+                "cpa_registration_risk_check": True,
                 "cpa_auth_dir": "data/cpa_auth",
                 "cpa_remote_url": "",
                 "grok2api_auth_dir": "",
@@ -241,6 +242,28 @@ class RegistrationRiskTests(unittest.TestCase):
             self.assertEqual(engine.ensure_sso_oauth_eligible("fixture-sso"), {})
         detailed.assert_not_called()
         legacy.assert_not_called()
+
+    def test_registration_risk_check_is_skipped_by_default(self):
+        engine.config["cpa_registration_risk_check"] = False
+        with mock.patch.object(engine._s2cpa, "inspect_sso_account_state") as inspect:
+            self.assertEqual(engine.ensure_sso_oauth_eligible("fixture-sso"), {})
+        inspect.assert_not_called()
+
+    def test_registration_risk_check_can_be_enabled(self):
+        engine.config.update({"cpa_registration_risk_check": True})
+        clean = {
+            "found": True,
+            "bot_flag_source": 0,
+            "bot_flag_details": "",
+            "policy": "",
+            "denied": False,
+            "error": "",
+        }
+        with mock.patch.object(
+            engine._s2cpa, "inspect_sso_account_state", return_value=clean
+        ) as inspect:
+            self.assertIs(engine.ensure_sso_oauth_eligible("fixture-sso"), clean)
+        inspect.assert_called_once()
 
 
 if __name__ == "__main__":

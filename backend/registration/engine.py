@@ -324,6 +324,8 @@ DEFAULT_CONFIG = {
     "cpa_auto_add": True,
     # 获取 SSO 后使用完整账号页解析器复查会话、邮箱与 botFlag 风控字段。
     "sso_detailed_risk_check": False,
+    # 注册完成后复查 grok.com botFlag；上游不再稳定提供该字段，默认跳过耗时复查。
+    "cpa_registration_risk_check": False,
     # Token 换取方式：device_protocol（协议 Device Flow，默认）/ device_browser（浏览器 Device Flow）/ auth_code
     "cpa_token_mode": "device_protocol",
     # CPA 本地 auth 目录
@@ -1369,6 +1371,8 @@ def ensure_sso_oauth_eligible(
 ) -> dict:
     """按配置复查 SSO 风控状态；详细模式同时验证会话与账号资料。"""
     detailed = bool(config.get("sso_detailed_risk_check", False))
+    if not detailed and not bool(config.get("cpa_registration_risk_check", False)):
+        return {}
     if not detailed:
         if not config.get("cpa_auto_add", False):
             return {}
