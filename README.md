@@ -2,7 +2,10 @@
 
 基于 FastAPI、React 和 Playwright 浏览器适配层的 Web 注册管理工具。Camoufox 保持默认，同时可切换到 CloakBrowser，支持注册任务、账号管理，以及 CPA / Grok2API 授权文件生成。
 
-[部署文档](DEPLOYMENT.md) · [Web 说明](WEB.md)
+[部署文档](DEPLOYMENT.md) · [Web 说明](WEB.md) · [GrokIQ 降智检测](https://github.com/kaibush/grok-iq)
+
+> **重要：上游 grok.com 已不再下发 `bfs` 标记。**
+> 注册机无法据此判断账号是否风控或降智。账号级降智检测和自动隔离必须使用 [GrokIQ](https://github.com/kaibush/grok-iq)：注册导入后由 GrokIQ 做质量探针、风险判定，并自动隔离异常账号。不要把本项目的 SSO / `botFlag` 检查当作风控结论。
 
 ## 界面预览
 
@@ -22,7 +25,8 @@
 - Camoufox（Firefox，默认）与 CloakBrowser（Chromium）双浏览器后端，共用注册流程、代理和异常进程清理
 - 支持 Cloudflare、DuckMail / Mail.tm、YYDS、MailNest、OutlookEmail、CloudMail
 - 注册完成后生成 CPA / Grok2API JSON
-- Grok Build 导入成功后可通过持久 Webhook 通知 GrokIQ
+- 上游已不再下发 `bfs`，本项目不能判断账号是否风控；必须联动 [GrokIQ](https://github.com/kaibush/grok-iq) 做账号级降智检测和自动隔离
+- Grok Build 导入成功后通过持久 Webhook 通知 GrokIQ，由 GrokIQ 自动探针并隔离异常账号
 - JSON 查看、复制和下载
 - 首次访问创建唯一管理员账号
 - Docker Compose 部署，支持无桌面 Linux 服务器
@@ -81,9 +85,11 @@ Docker 首次生成 `data/config.json` 时会预填该内部地址；已有配�
 
 OutlookEmail 数据保存在 `outlookemail-data/`，并已被 Git 和 Docker 构建上下文忽略。完整配置见 [DEPLOYMENT.md](DEPLOYMENT.md#可选-outlookemail-邮箱池)。
 
-## 与 GrokIQ 联动
+## 与 GrokIQ 联动（必须）
 
-本项目可与 [GrokIQ](https://github.com/kaibush/grok-iq) 统一编排。Grok Register 将账号成功导入 Grok2API 后，会通过持久 Webhook 通知 GrokIQ；GrokIQ 接收并去重账号事件，还可按设置自动执行首次质量探针。
+上游 grok.com 已经不下发 `bfs` 风控标记，**仅靠本注册机无法判断账号是否风控**。账号级降智检测和自动隔离必须交给 [GrokIQ](https://github.com/kaibush/grok-iq)。
+
+Grok Register 只负责注册并导入 Grok2API；导入成功后通过持久 Webhook 通知 GrokIQ。GrokIQ 接收并去重账号事件，按设置自动执行质量探针，识别降智 / 异常账号并自动隔离。没有 GrokIQ 时，新注册账号只能当作“尚未检测”，不能当作“未风控”。
 
 ```text
 Grok Register 注册并导入 Grok2API
@@ -92,7 +98,7 @@ Grok Register 注册并导入 Grok2API
                          │
                          ▼
               GrokIQ
-              接收账号 → 自动探针 → 风险与质量监控
+              接收账号 → 自动探针 → 降智检测与自动隔离
 ```
 
 复制环境变量模板，并至少为两端设置相同的联动 Token：
@@ -219,8 +225,8 @@ Windows 启动：
 | `browser_engine` | 浏览器后端：`camoufox`（默认）或 `cloakbrowser` |
 | `browser_headless` | 本机无头模式；Docker 中强制关闭 |
 | `cpa_auto_add` | 注册后生成 CPA 授权 |
-| `sso_detailed_risk_check` | 获取 SSO 后详细检查账号页；`botFlagSource=0` 正常，非 `0` 异常，缺失时自动重试 |
-| `cpa_registration_risk_check` | 注册获取 SSO 后复查 grok.com `botFlag`；默认关闭，开启后缺失字段会按 0 / 2 / 4 / 8 秒自动复查 |
+| `sso_detailed_risk_check` | 获取 SSO 后尝试读取账号页 `botFlagSource`。上游已不再稳定下发 `bfs` / `botFlag`，该检查不能作为风控结论；账号级降智检测请用 GrokIQ |
+| `cpa_registration_risk_check` | 注册获取 SSO 后复查 grok.com `botFlag`；默认关闭。字段经常缺失，不能判断账号是否风控；必须使用 GrokIQ 做降智检测和自动隔离 |
 | `cpa_auth_dir` | CPA JSON 保存目录 |
 | `cpa_remote_url` | CPA Management API 地址 |
 | `cpa_management_key` | CPA 管理密钥 |
@@ -303,6 +309,10 @@ docker compose up -d --force-recreate
 Release；标签版本同时注入镜像内的 `VERSION`。
 
 ## 常见问题
+
+### 注册完成后如何判断账号是否风控？
+
+不能靠本注册机判断。上游 grok.com 已不再下发 `bfs` 标记，SSO / `botFlag` 检查也无法给出可靠结论。必须接入 [GrokIQ](https://github.com/kaibush/grok-iq)，由它对账号做质量探针、降智检测和自动隔离。推荐使用 `compose.yaml` + `compose.grokiq.yaml` 一起启动。
 
 ### Docker 修改配置后未生效
 
