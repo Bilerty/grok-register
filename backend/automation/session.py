@@ -117,6 +117,8 @@ _start_fail_lock = threading.Lock()
 _start_fail_streak = 0
 _start_fail_threshold = 3
 _browser_launch_blocked = threading.Event()
+_browser_launch_gate = threading.Lock()
+_BROWSER_LAUNCH_TIMEOUT_MS = 60_000
 _low_traffic_cache_locks: dict[str, threading.Lock] = {}
 _low_traffic_cache_locks_guard = threading.Lock()
 
@@ -225,11 +227,11 @@ def low_traffic_enabled() -> bool:
 def traffic_savings_level() -> str:
     """standard: grok.com 省流；more: 额外缓存 accounts.x.ai 哈希静态资源。"""
     if not _get_traffic_savings_level:
-        return "standard"
-    value = str(_get_traffic_savings_level() or "standard").strip().lower()
-    if value in {"more", "max", "aggressive"}:
         return "more"
-    return "standard"
+    value = str(_get_traffic_savings_level() or "more").strip().lower()
+    if value in {"standard", "less", "light"}:
+        return "standard"
+    return "more"
 
 
 def low_traffic_should_block(url: str, resource_type: str) -> bool:
@@ -398,20 +400,22 @@ def _install_low_traffic_routing(browser_context, log_callback=None) -> None:
         lock = _low_traffic_cache_lock(url)
         with lock:
             cached = _cached_response(url)
-            if cached is not None:
-                status, headers, body = cached
-                route.fulfill(status=status, headers=headers, body=body)
-                return
-            try:
-                response = route.fetch()
-                body = response.body()
-                headers = dict(response.headers or {})
-                status = int(response.status or 0)
-                _store_cached_response(url, status, headers, body)
-                route.fulfill(response=response, body=body)
-                return
-            except Exception:
-                route.continue_()
+        if cached is not None:
+            status, headers, body = cached
+            route.fulfill(status=status, headers=headers, body=body)
+            return
+        try:
+            response = route.fetch()
+            body = response.body()
+            headers = dict(response.headers or {})
+            status = int(response.status or 0)
+            with lock:
+                if _cached_response(url) is None:
+                    _store_cached_response(url, status, headers, body)
+            route.fulfill(response=response, body=body)
+            return
+        except Exception:
+            route.continue_()
 
     browser_context.route("**/*", handle)
     if log_callback:
@@ -657,6 +661,19 @@ def _is_managed_browser_process(executable: str, command_line: str) -> bool:
     )
 
 
+def _is_local_playwright_driver(pid: int, ppid: int, executable: str, command_line: str) -> bool:
+    """Match Playwright run-driver processes started by this registrar."""
+    if pid == os.getpid():
+        return False
+    command = str(command_line or "").replace("\\", "/").lower()
+    if "playwright/driver" not in command or "run-driver" not in command:
+        return False
+    if ppid == os.getpid():
+        return True
+    project = str(Path(__file__).resolve().parents[2]).replace("\\", "/").lower()
+    return project in command
+
+
 def _linux_processes() -> dict[int, tuple[int, str, str]]:
     processes: dict[int, tuple[int, str, str]] = {}
     proc_root = "/proc"
@@ -778,12 +795,55 @@ def kill_all_cloakbrowser_processes(log_callback=None) -> dict:
 def kill_all_browser_processes(log_callback=None) -> dict:
     """Terminate both supported browser backends and remove managed profiles."""
     block_browser_launches()
-    return _kill_browser_processes(
+    result = _kill_browser_processes(
         _is_managed_browser_process,
         profile_engine=None,
         label="浏览器",
         log_callback=log_callback,
     )
+    result["killed"] = int(result.get("killed") or 0) + _kill_local_playwright_drivers(
+        log_callback=log_callback
+    )
+    return result
+
+
+def interrupt_browser_work(log_callback=None) -> dict:
+    """Stop in-flight launches so a running job can actually exit."""
+    return kill_all_browser_processes(log_callback=log_callback)
+
+
+def _kill_local_playwright_drivers(log_callback=None) -> int:
+    processes = _linux_processes()
+    current_pid = os.getpid()
+    targets = {
+        pid
+        for pid, (ppid, executable, command) in processes.items()
+        if _is_local_playwright_driver(pid, ppid, executable, command)
+    }
+    changed = True
+    while changed:
+        changed = False
+        for pid, (ppid, _, _) in processes.items():
+            if pid != current_pid and ppid in targets and pid not in targets:
+                targets.add(pid)
+                changed = True
+    if not targets:
+        return 0
+    attempted = set()
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for pid in sorted(targets, reverse=True):
+            try:
+                os.kill(pid, sig)
+                attempted.add(pid)
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                continue
+        if sig == signal.SIGTERM and targets:
+            time.sleep(0.3)
+    if attempted and log_callback:
+        log_callback(f"[!] 已终止 {len(attempted)} 个卡住的 Playwright 驱动")
+    return len(attempted)
 
 
 def _build_camoufox_proxy(proxy_str: str) -> dict:
@@ -915,6 +975,7 @@ def create_camoufox_options(unique_profile=True) -> dict:
         "locale": _browser_locale(),  # 覆盖 GeoIP 语言，保持页面元素文本稳定
         "block_webrtc": True,   # 防止 WebRTC 泄漏真实 IP（即使使用代理）
         "i_know_what_im_doing": True,  # 抑制 Firefox 版本伪装警告（Camoufox 引擎层伪装是预期行为）
+        "timeout": _BROWSER_LAUNCH_TIMEOUT_MS,
     }
 
     # 旧格式安装兼容：传 executable_path 绕过 installed_verstr() 检查
@@ -960,6 +1021,7 @@ def create_cloakbrowser_options(unique_profile=True) -> dict:
         "geoip": True,
         # 明确固定页面语言；geoip 仍用于时区与 WebRTC 出口匹配。
         "locale": _browser_locale(),
+        "timeout": _BROWSER_LAUNCH_TIMEOUT_MS,
     }
 
     proxies = _proxies()
@@ -1025,7 +1087,7 @@ def _close_unwrapped_context(browser_context=None, lifecycle=None) -> None:
         pass
 
 
-def start_browser(log_callback=None) -> Tuple[object, object]:
+def start_browser(log_callback=None, cancel_callback=None) -> Tuple[object, object]:
     """启动当前配置的浏览器后端并返回共用页面适配对象。
 
     ``browser_engine`` 缺省为 Camoufox；切换到 CloakBrowser 时只替换启动
@@ -1034,12 +1096,22 @@ def start_browser(log_callback=None) -> Tuple[object, object]:
     engine = selected_browser_engine()
     engine_label = "CloakBrowser" if engine == BROWSER_ENGINE_CLOAKBROWSER else "Camoufox"
     last_exc = None
-    for attempt in range(1, 5):
+
+    def _launch_interrupted() -> bool:
         if _browser_launch_blocked.is_set():
+            return True
+        return bool(cancel_callback()) if cancel_callback else False
+
+    for attempt in range(1, 5):
+        if _launch_interrupted():
             raise RuntimeError("浏览器启动已被紧急终止操作阻止")
+        while not _browser_launch_gate.acquire(timeout=0.4):
+            if _launch_interrupted():
+                raise RuntimeError("浏览器启动已被紧急终止操作阻止")
         profile_dir = None
         browser_context = None
         lifecycle = None
+        retry_wait = 0
         try:
             opts = create_browser_options(unique_profile=True, engine=engine)
             profile_dir = getattr(_tls, "profile_dir", None)
@@ -1049,12 +1121,15 @@ def start_browser(log_callback=None) -> Tuple[object, object]:
             else:
                 browser_context, lifecycle = _launch_camoufox_context(opts)
 
+            if _launch_interrupted():
+                raise RuntimeError("浏览器启动已被紧急终止操作阻止")
+
             _install_low_traffic_routing(browser_context, log_callback=log_callback)
             _install_accounts_resource_diagnostics(
                 browser_context, log_callback=log_callback
             )
 
-            if _browser_launch_blocked.is_set():
+            if _launch_interrupted():
                 raise RuntimeError("浏览器启动已被紧急终止操作阻止")
 
             # 获取或创建页面
@@ -1115,7 +1190,20 @@ def start_browser(log_callback=None) -> Tuple[object, object]:
             _cleanup_profile_dir(profile_dir)
             if isinstance(exc, BrowserBackendUnavailable):
                 break
-            time.sleep(min(1.5 * attempt, 4))
+            if _launch_interrupted():
+                raise RuntimeError("浏览器启动已被紧急终止操作阻止") from exc
+            retry_wait = min(1.5 * attempt, 4)
+        finally:
+            try:
+                _browser_launch_gate.release()
+            except RuntimeError:
+                pass
+        if retry_wait:
+            deadline = time.time() + retry_wait
+            while time.time() < deadline:
+                if _launch_interrupted():
+                    raise RuntimeError("浏览器启动已被紧急终止操作阻止")
+                time.sleep(min(0.2, max(0.0, deadline - time.time())))
     raise Exception(f"{engine_label} 启动失败: {last_exc}")
 
 
@@ -1135,9 +1223,9 @@ def stop_browser(force=False):
     _cleanup_profile_dir(profile_dir)
 
 
-def restart_browser(log_callback=None):
+def restart_browser(log_callback=None, cancel_callback=None):
     stop_browser(force=True)
-    return start_browser(log_callback=log_callback)
+    return start_browser(log_callback=log_callback, cancel_callback=cancel_callback)
 
 
 def cleanup_runtime_memory(log_callback=None, reason="定期清理"):

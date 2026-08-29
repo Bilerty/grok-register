@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 from backend.web.jobs import RegistrationJobCoordinator
 
@@ -30,6 +31,28 @@ class RegistrationJobProgressTests(unittest.TestCase):
         self.assertEqual(status["completed_count"], 2)
         self.assertEqual(status["failure_count"], 2)
         self.assertEqual(status["progress_percent"], 100.0)
+
+    def test_request_stop_interrupts_browser_work(self):
+        manager = RegistrationJobCoordinator()
+        manager._running = True
+
+        class Controller:
+            def __init__(self):
+                self.stop_requested = False
+
+            def stop(self):
+                self.stop_requested = True
+
+            def should_stop(self):
+                return self.stop_requested
+
+        manager._stop_controller = Controller()
+        with mock.patch("backend.automation.session.interrupt_browser_work") as interrupt:
+            status = manager.request_stop()
+
+        interrupt.assert_called_once()
+        self.assertTrue(manager._stop_controller.stop_requested)
+        self.assertTrue(status["running"])
 
 
 if __name__ == "__main__":

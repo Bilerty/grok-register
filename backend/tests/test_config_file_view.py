@@ -86,13 +86,25 @@ class ProxyConfigUpdateTests(unittest.TestCase):
         self.assertIs(result["config"]["browser_low_traffic_mode"], True)
         save.assert_called_once_with()
 
-    def test_traffic_savings_level_accepts_more_and_falls_back_to_standard(self):
+    def test_traffic_savings_level_accepts_standard_and_falls_back_to_more(self):
         with patch.object(gr, "load_config"), patch.object(gr, "save_config"):
-            selected = _apply_config_updates({"browser_traffic_savings_level": "more"})
+            selected = _apply_config_updates({"browser_traffic_savings_level": "standard"})
             fallback = _apply_config_updates({"browser_traffic_savings_level": "unknown"})
 
-        self.assertEqual(selected["config"]["browser_traffic_savings_level"], "more")
-        self.assertEqual(fallback["config"]["browser_traffic_savings_level"], "standard")
+        self.assertEqual(selected["config"]["browser_traffic_savings_level"], "standard")
+        self.assertEqual(fallback["config"]["browser_traffic_savings_level"], "more")
+
+    def test_missing_traffic_savings_level_defaults_to_more(self):
+        self.assertEqual(gr.DEFAULT_CONFIG["browser_traffic_savings_level"], "more")
+        original = gr.config.get("browser_traffic_savings_level", "missing")
+        try:
+            gr.config.pop("browser_traffic_savings_level", None)
+            self.assertEqual(gr.get_browser_traffic_savings_level(), "more")
+        finally:
+            if original == "missing":
+                gr.config.pop("browser_traffic_savings_level", None)
+            else:
+                gr.config["browser_traffic_savings_level"] = original
 
     def test_browser_engine_accepts_cloakbrowser_and_falls_back_to_camoufox(self):
         with patch.object(gr, "load_config"), patch.object(gr, "save_config"):

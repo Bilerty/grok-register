@@ -428,7 +428,7 @@ def open_signup_page(log_callback=None, cancel_callback=None):
 
     def _ensure_browser():
         if active_browser() is None:
-            start_browser(log_callback=log_callback)
+            start_browser(log_callback=log_callback, cancel_callback=cancel_callback)
             if log_callback:
                 log_callback("[*] 浏览器已启动")
         _prepare_exit_ip(log_callback)
@@ -458,7 +458,7 @@ def open_signup_page(log_callback=None, cancel_callback=None):
         if log_callback:
             log_callback(f"[Debug] 打开URL异常: {e}")
         try:
-            restart_browser(log_callback=log_callback)
+            restart_browser(log_callback=log_callback, cancel_callback=cancel_callback)
             _navigate_signup()
         except Exception as e2:
             # 导航彻底失败：关掉残留实例，避免空浏览器挂着

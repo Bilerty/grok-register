@@ -315,7 +315,7 @@ DEFAULT_CONFIG = {
     "browser_headless": False,
     "browser_locale": "en-US",
     "browser_low_traffic_mode": True,
-    "browser_traffic_savings_level": "standard",
+    "browser_traffic_savings_level": "more",
     "close_browser_on_stop": False,
     "log_level": "info",
     "register_count": 1,
@@ -2781,10 +2781,10 @@ def is_browser_low_traffic_mode() -> bool:
 
 
 def get_browser_traffic_savings_level() -> str:
-    value = str(config.get("browser_traffic_savings_level") or "standard").strip().lower()
-    if value in {"more", "max", "aggressive"}:
-        return "more"
-    return "standard"
+    value = str(config.get("browser_traffic_savings_level") or "more").strip().lower()
+    if value in {"standard", "less", "light"}:
+        return "standard"
+    return "more"
 
 
 def should_close_browser_after_run(user_stopped: bool) -> bool:
@@ -2992,8 +2992,14 @@ def run_registration(count):
             try:
                 boot_started_at = time.time()
                 try:
-                    start_browser(log_callback=lambda m: registration_log(f"[W{wid+1}] {m}"))
+                    start_browser(
+                        log_callback=lambda m: registration_log(f"[W{wid+1}] {m}"),
+                        cancel_callback=controller.should_stop,
+                    )
                 except Exception as boot_exc:
+                    if controller.should_stop():
+                        registration_log(f"[W{wid+1}] [!] 已停止，浏览器启动中断: {boot_exc}")
+                        return
                     local_fail = n
                     local_fail_stats[FAIL_BROWSER] = local_fail_stats.get(FAIL_BROWSER, 0) + n
                     registration_log(f"[W{wid+1}] [-] 浏览器启动失败，{n} 个任务均记为失败: {boot_exc}")
@@ -3282,8 +3288,11 @@ def run_registration(count):
     try:
         boot_started_at = time.time()
         try:
-            start_browser(log_callback=registration_log)
+            start_browser(log_callback=registration_log, cancel_callback=controller.should_stop)
         except Exception as boot_exc:
+            if controller.should_stop():
+                registration_log(f"[!] 已停止，浏览器启动中断: {boot_exc}")
+                return
             fail_count += count
             fail_stats[FAIL_BROWSER] = fail_stats.get(FAIL_BROWSER, 0) + count
             registration_log(f"[-] 浏览器启动失败，{count} 个任务均记为失败: {boot_exc}")
@@ -3365,7 +3374,7 @@ def run_registration(count):
                                 extra={"邮箱已更换重试": True, "邮箱尝试次数": mail_try},
                             )
                             registration_log(f"[!] 本邮箱未取到验证码，自动更换新邮箱重试: {msg}")
-                            restart_browser(log_callback=registration_log)
+                            restart_browser(log_callback=registration_log, cancel_callback=controller.should_stop)
                             sleep_with_cancel(1, controller.should_stop)
                             continue
                         raise

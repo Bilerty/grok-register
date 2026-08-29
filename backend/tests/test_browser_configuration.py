@@ -86,8 +86,13 @@ class BrowserHeadlessConfigTests(unittest.TestCase):
 
         exclude.assert_called_once_with(disable_defaults=True)
         self.assertIs(options["exclude_addons"], sentinel)
+        self.assertEqual(options["timeout"], browser_session._BROWSER_LAUNCH_TIMEOUT_MS)
 
     def test_low_traffic_request_rules_preserve_registration_and_turnstile(self):
+        browser_session.configure(
+            is_low_traffic=lambda: True,
+            get_traffic_savings_level=lambda: "more",
+        )
         self.assertTrue(
             browser_session.low_traffic_should_cache(
                 "https://cdn.grok.com/assets/app.js", "script"
@@ -118,7 +123,7 @@ class BrowserHeadlessConfigTests(unittest.TestCase):
                 "https://accounts.x.ai/api/register", "fetch"
             )
         )
-        self.assertFalse(
+        self.assertTrue(
             browser_session.low_traffic_should_cache(
                 "https://accounts.x.ai/_next/static/chunks/app-hash.js", "script"
             )
