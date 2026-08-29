@@ -30,6 +30,7 @@
   "browser_headless": false,
   "browser_locale": "en-US",
   "browser_low_traffic_mode": true,
+  "browser_traffic_savings_level": "standard",
   "close_browser_on_stop": false,
   "log_level": "info",
   "register_count": 1,

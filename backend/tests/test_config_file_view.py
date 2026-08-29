@@ -86,6 +86,14 @@ class ProxyConfigUpdateTests(unittest.TestCase):
         self.assertIs(result["config"]["browser_low_traffic_mode"], True)
         save.assert_called_once_with()
 
+    def test_traffic_savings_level_accepts_more_and_falls_back_to_standard(self):
+        with patch.object(gr, "load_config"), patch.object(gr, "save_config"):
+            selected = _apply_config_updates({"browser_traffic_savings_level": "more"})
+            fallback = _apply_config_updates({"browser_traffic_savings_level": "unknown"})
+
+        self.assertEqual(selected["config"]["browser_traffic_savings_level"], "more")
+        self.assertEqual(fallback["config"]["browser_traffic_savings_level"], "standard")
+
     def test_browser_engine_accepts_cloakbrowser_and_falls_back_to_camoufox(self):
         with patch.object(gr, "load_config"), patch.object(gr, "save_config"):
             selected = _apply_config_updates({"browser_engine": "cloakbrowser"})

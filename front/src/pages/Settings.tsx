@@ -542,10 +542,26 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
               />
               <ToggleRow
                 title="低流量注册模式"
-                description="保持账号独立浏览器，复用 CDN 静态资源缓存并跳过媒体、字体及非注册必需的第三方资源"
+                description="保持账号独立浏览器，复用 CDN 静态资源缓存并跳过非注册必需的第三方资源"
                 checked={!!config.browser_low_traffic_mode}
                 onCheckedChange={(value) => setField("browser_low_traffic_mode", value)}
               />
+              {config.browser_low_traffic_mode ? (
+                <div className="min-w-0 space-y-2 rounded-xl border bg-muted/20 px-3 py-3 sm:px-4">
+                  <Label htmlFor="browser_traffic_savings_level">流量节省级别</Label>
+                  <Select
+                    id="browser_traffic_savings_level"
+                    value={config.browser_traffic_savings_level === "more" ? "more" : "standard"}
+                    onChange={(event) => setField("browser_traffic_savings_level", event.target.value)}
+                  >
+                    <option value="standard">较少节省（缓存 grok.com CDN，拦截非注册媒体）</option>
+                    <option value="more">更多节省（额外缓存 accounts.x.ai 哈希静态资源）</option>
+                  </Select>
+                  <p className="text-xs leading-5 text-muted-foreground">
+                    较少节省沿用 grok.com 静态资源缓存；更多节省会叠加上 accounts.x.ai 的哈希静态资源缓存，进一步减少每个独立浏览器的重复下载。
+                  </p>
+                </div>
+              ) : null}
               <ToggleRow
                 title="停止时关闭浏览器"
                 description="收到停止请求后清理当前浏览器实例"

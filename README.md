@@ -224,6 +224,8 @@ Windows 启动：
 | `proxy` | 注册和 OAuth 请求使用的 HTTP(S) 代理；支持 `http://host:port` 和 `http://user:password@host:port`，凭据中的特殊字符需使用 URL 百分号编码。注册风控会记录浏览器识别到的出口 IP；下次若仍是该 IP，会重启浏览器换出口后再注册。风控名单在「账号中心 → 出口 IP 风控」查看，单账号出口 IP 在「账号中心 → 账号管理 → 查看」详情中 |
 | `browser_engine` | 浏览器后端：`camoufox`（默认）或 `cloakbrowser` |
 | `browser_headless` | 本机无头模式；Docker 中强制关闭 |
+| `browser_low_traffic_mode` | 低流量注册模式，默认开启；复用静态资源缓存并跳过非注册必需资源 |
+| `browser_traffic_savings_level` | 低流量模式下的节省级别：`standard`（grok.com CDN 缓存）或 `more`（额外缓存 accounts.x.ai 哈希静态资源） |
 | `cpa_auto_add` | 注册后生成 CPA 授权 |
 | `sso_detailed_risk_check` | 获取 SSO 后尝试读取账号页 `botFlagSource`。上游已不再稳定下发 `bfs` / `botFlag`，该检查不能作为风控结论；账号级降智检测请用 GrokIQ |
 | `cpa_registration_risk_check` | 注册获取 SSO 后复查 grok.com `botFlag`；默认关闭。字段经常缺失，不能判断账号是否风控；必须使用 GrokIQ 做降智检测和自动隔离 |

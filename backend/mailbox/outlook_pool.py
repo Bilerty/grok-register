@@ -773,7 +773,7 @@ def wait_for_code(
     folder: str = "all",
     top: int = 10,
     proxies: Optional[dict] = None,
-    timeout: int = 180,
+    timeout: int = 60,
     poll_interval: int = 3,
     raise_if_cancelled: Callable[[Optional[Callable[[], bool]]], None],
     sleep_with_cancel: Callable[[float, Optional[Callable[[], bool]]], None],

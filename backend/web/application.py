@@ -77,6 +77,7 @@ CONFIG_PUBLIC_KEYS = (
     "browser_headless",
     "browser_locale",
     "browser_low_traffic_mode",
+    "browser_traffic_savings_level",
     "close_browser_on_stop",
     "log_level",
     "register_count",
@@ -400,6 +401,10 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
             value = str(value or "camoufox").strip().lower()
             if value not in {"camoufox", "cloakbrowser"}:
                 value = "camoufox"
+        elif key == "browser_traffic_savings_level":
+            value = str(value or "standard").strip().lower()
+            if value not in {"standard", "more", "max"}:
+                value = "standard"
         elif key == "email_provider":
             value = str(value or "cloudflare").strip().lower() or "cloudflare"
             if value not in {"cloudflare", "duckmail", "yyds", "mailnest", "outlookemail", "cloudmail"}:

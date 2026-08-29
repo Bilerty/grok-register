@@ -111,6 +111,7 @@ _is_headless: Optional[Callable[[], bool]] = None
 _get_locale: Optional[Callable[[], str]] = None
 _get_engine: Optional[Callable[[], str]] = None
 _is_low_traffic: Optional[Callable[[], bool]] = None
+_get_traffic_savings_level: Optional[Callable[[], str]] = None
 _extension_path: str = ""
 _start_fail_lock = threading.Lock()
 _start_fail_streak = 0
@@ -127,10 +128,12 @@ _LOW_TRAFFIC_BLOCKED_HOSTS = {
 }
 _LOW_TRAFFIC_MEDIA_HOSTS = {"media.x.ai"}
 _LOW_TRAFFIC_VISUAL_HOSTS = {"cdn.grok.com", "grok.com", "www.grok.com"}
-# accounts.x.ai 的 bundle 虽然使用哈希文件名，但页面运行时还依赖同批次
-# 的文档、动态配置和风控状态；跨 profile 共享可能导致提交阶段卡住。因此
-# 只保留已验证安全的 cdn.grok.com 静态缓存。
+# 标准省流只缓存已验证安全的 cdn.grok.com 静态资源。
+# 更多节省额外缓存 accounts.x.ai 的 /_next/static/ 哈希资源；页面文档、
+# 动态配置、风控状态和 Cloudflare 挑战仍走网络，避免跨 profile 混用。
 _LOW_TRAFFIC_CACHE_HOSTS = {"cdn.grok.com"}
+_LOW_TRAFFIC_ACCOUNTS_HOSTS = {"accounts.x.ai"}
+_LOW_TRAFFIC_ACCOUNTS_STATIC_MARKERS = ("/_next/static/",)
 _LOW_TRAFFIC_CACHE_TYPES = {"script", "stylesheet", "font"}
 _LOW_TRAFFIC_CACHE_MAX_BYTES = 24 * 1024 * 1024
 _LOW_TRAFFIC_CACHE_TOTAL_BYTES = 512 * 1024 * 1024
@@ -151,16 +154,18 @@ def configure(
     get_locale=None,
     get_engine=None,
     is_low_traffic=None,
+    get_traffic_savings_level=None,
     extension_path="",
 ):
     global _get_proxy, _is_debug, _is_headless, _get_locale, _get_engine
-    global _is_low_traffic, _extension_path
+    global _is_low_traffic, _get_traffic_savings_level, _extension_path
     _get_proxy = get_proxies
     _is_debug = is_debug
     _is_headless = is_headless
     _get_locale = get_locale
     _get_engine = get_engine
     _is_low_traffic = is_low_traffic
+    _get_traffic_savings_level = get_traffic_savings_level
     _extension_path = extension_path or ""
 
 
@@ -217,6 +222,16 @@ def low_traffic_enabled() -> bool:
     return bool(_is_low_traffic()) if _is_low_traffic else False
 
 
+def traffic_savings_level() -> str:
+    """standard: grok.com 省流；more: 额外缓存 accounts.x.ai 哈希静态资源。"""
+    if not _get_traffic_savings_level:
+        return "standard"
+    value = str(_get_traffic_savings_level() or "standard").strip().lower()
+    if value in {"more", "max", "aggressive"}:
+        return "more"
+    return "standard"
+
+
 def low_traffic_should_block(url: str, resource_type: str) -> bool:
     """只拦截不参与注册状态与 Turnstile 验证的高流量资源。"""
     try:
@@ -239,13 +254,21 @@ def low_traffic_should_cache(url: str, resource_type: str, method: str = "GET") 
     if str(method or "GET").upper() != "GET":
         return False
     try:
-        host = (urlparse(str(url or "")).hostname or "").lower()
+        parsed = urlparse(str(url or ""))
+        host = (parsed.hostname or "").lower()
+        path = (parsed.path or "").lower()
     except ValueError:
         return False
     kind = str(resource_type or "").strip().lower()
-    if host not in _LOW_TRAFFIC_CACHE_HOSTS or kind not in _LOW_TRAFFIC_CACHE_TYPES:
+    if kind not in _LOW_TRAFFIC_CACHE_TYPES:
         return False
-    return True
+    if host in _LOW_TRAFFIC_CACHE_HOSTS:
+        return True
+    if traffic_savings_level() != "more":
+        return False
+    if host not in _LOW_TRAFFIC_ACCOUNTS_HOSTS or "/cdn-cgi/" in path:
+        return False
+    return any(marker in path for marker in _LOW_TRAFFIC_ACCOUNTS_STATIC_MARKERS)
 
 
 def _low_traffic_cache_root() -> Path:
@@ -392,7 +415,10 @@ def _install_low_traffic_routing(browser_context, log_callback=None) -> None:
 
     browser_context.route("**/*", handle)
     if log_callback:
-        log_callback("[*] 低流量模式：已启用静态资源缓存与非业务媒体拦截")
+        if traffic_savings_level() == "more":
+            log_callback("[*] 低流量模式：已启用 grok.com 与 accounts.x.ai 静态资源缓存与非业务媒体拦截")
+        else:
+            log_callback("[*] 低流量模式：已启用 grok.com 静态资源缓存与非业务媒体拦截")
 
 
 def _install_accounts_resource_diagnostics(browser_context, log_callback=None) -> None:

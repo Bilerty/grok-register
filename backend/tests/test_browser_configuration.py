@@ -16,6 +16,7 @@ class BrowserHeadlessConfigTests(unittest.TestCase):
             get_locale=lambda: "en-US",
             get_engine=lambda: "camoufox",
             is_low_traffic=lambda: False,
+            get_traffic_savings_level=lambda: "standard",
         )
 
     def test_camoufox_remains_default_browser_engine(self):
@@ -130,6 +131,47 @@ class BrowserHeadlessConfigTests(unittest.TestCase):
         self.assertFalse(
             browser_session.low_traffic_should_cache(
                 "https://accounts.x.ai/cdn-cgi/challenge-platform/main.js", "script"
+            )
+        )
+
+    def test_more_savings_caches_accounts_hashed_static_resources(self):
+        browser_session.configure(
+            is_low_traffic=lambda: True,
+            get_traffic_savings_level=lambda: "standard",
+        )
+        self.assertFalse(
+            browser_session.low_traffic_should_cache(
+                "https://accounts.x.ai/_next/static/chunks/app-hash.js", "script"
+            )
+        )
+
+        browser_session.configure(
+            is_low_traffic=lambda: True,
+            get_traffic_savings_level=lambda: "more",
+        )
+        self.assertTrue(
+            browser_session.low_traffic_should_cache(
+                "https://accounts.x.ai/_next/static/chunks/app-hash.js", "script"
+            )
+        )
+        self.assertTrue(
+            browser_session.low_traffic_should_cache(
+                "https://cdn.grok.com/assets/app.js", "script"
+            )
+        )
+        self.assertFalse(
+            browser_session.low_traffic_should_cache(
+                "https://accounts.x.ai/sign-up", "document"
+            )
+        )
+        self.assertFalse(
+            browser_session.low_traffic_should_cache(
+                "https://accounts.x.ai/cdn-cgi/challenge-platform/main.js", "script"
+            )
+        )
+        self.assertFalse(
+            browser_session.low_traffic_should_cache(
+                "https://accounts.x.ai/api/register", "fetch"
             )
         )
 

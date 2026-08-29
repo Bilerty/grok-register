@@ -315,6 +315,7 @@ DEFAULT_CONFIG = {
     "browser_headless": False,
     "browser_locale": "en-US",
     "browser_low_traffic_mode": True,
+    "browser_traffic_savings_level": "standard",
     "close_browser_on_stop": False,
     "log_level": "info",
     "register_count": 1,
@@ -1007,7 +1008,7 @@ def mailnest_receive_email(email):
     return mailnest_provider.receive_email(http_post, get_mailnest_api_key(), email)
 
 
-def mailnest_get_code(email, timeout=180, poll_interval=3, log_callback=None, cancel_callback=None):
+def mailnest_get_code(email, timeout=60, poll_interval=3, log_callback=None, cancel_callback=None):
     return mailnest_provider.wait_for_code(
         http_post,
         get_mailnest_api_key(),
@@ -1247,7 +1248,7 @@ def outlookemail_get_email_and_token():
 
 def outlookemail_get_oai_code(
     email,
-    timeout=180,
+    timeout=60,
     poll_interval=3,
     log_callback=None,
     cancel_callback=None,
@@ -2111,7 +2112,7 @@ def yyds_get_email_and_token(api_key=None, jwt=None):
     return address, temp_token
 
 
-def yyds_get_oai_code(token, address, timeout=180, poll_interval=3, log_callback=None, jwt=None, cancel_callback=None):
+def yyds_get_oai_code(token, address, timeout=60, poll_interval=3, log_callback=None, jwt=None, cancel_callback=None):
     return yyds_provider.wait_for_code(
         http_get,
         token,
@@ -2163,7 +2164,7 @@ def cloudmail_get_email_and_token():
 def cloudmail_get_oai_code(
     dev_token,
     email,
-    timeout=180,
+    timeout=60,
     poll_interval=3,
     log_callback=None,
     cancel_callback=None,
@@ -2242,7 +2243,7 @@ def get_email_and_token(api_key=None):
 def get_oai_code(
     dev_token,
     email,
-    timeout=180,
+    timeout=60,
     poll_interval=3,
     log_callback=None,
     cancel_callback=None,
@@ -2315,7 +2316,7 @@ def extract_verification_code(text, subject=""):
 def duckmail_get_oai_code(
     dev_token,
     email,
-    timeout=180,
+    timeout=60,
     poll_interval=3,
     log_callback=None,
     cancel_callback=None,
@@ -2338,7 +2339,7 @@ def duckmail_get_oai_code(
 def cloudflare_get_oai_code(
     dev_token,
     email,
-    timeout=180,
+    timeout=60,
     poll_interval=3,
     log_callback=None,
     cancel_callback=None,
@@ -2779,6 +2780,13 @@ def is_browser_low_traffic_mode() -> bool:
     return bool(config.get("browser_low_traffic_mode", False))
 
 
+def get_browser_traffic_savings_level() -> str:
+    value = str(config.get("browser_traffic_savings_level") or "standard").strip().lower()
+    if value in {"more", "max", "aggressive"}:
+        return "more"
+    return "standard"
+
+
 def should_close_browser_after_run(user_stopped: bool) -> bool:
     """正常结束时非调试模式关闭；手动停止时严格以勾选项为准。"""
     if user_stopped:
@@ -2825,6 +2833,7 @@ def _wire_runtime_modules():
         get_locale=get_browser_locale,
         get_engine=get_browser_engine,
         is_low_traffic=is_browser_low_traffic_mode,
+        get_traffic_savings_level=get_browser_traffic_savings_level,
         extension_path=EXTENSION_PATH,
     )
     _rf.configure(
