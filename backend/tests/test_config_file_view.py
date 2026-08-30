@@ -63,6 +63,30 @@ class ProxyConfigUpdateTests(unittest.TestCase):
         self.assertIn("网络代理格式错误", str(raised.exception.detail))
         save.assert_not_called()
 
+    def test_multiline_pool_proxy_is_saved_without_400(self):
+        # 池模式下 proxy 是多行文本，整值校验会 400；必须按行校验后放行
+        multiline = "http://a.example.com:8000\nhttp://u:p@b.example.com:8000"
+        with patch.object(gr, "load_config"), patch.object(gr, "save_config") as save:
+            result = _apply_config_updates({"proxy": multiline})
+
+        self.assertEqual(gr.config["proxy"], multiline)
+        self.assertEqual(result["config"]["proxy"], multiline)
+        save.assert_called_once_with()
+
+    def test_multiline_pool_proxy_rejects_bad_line_before_saving(self):
+        with patch.object(gr, "load_config"), patch.object(gr, "save_config") as save:
+            with self.assertRaises(HTTPException) as raised:
+                _apply_config_updates(
+                    {
+                        "proxy": "http://a.example.com:8000\n"
+                        "http://user:bad%ZZ@b.example.com:8080"
+                    }
+                )
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("网络代理格式错误", str(raised.exception.detail))
+        save.assert_not_called()
+
     def test_sso_detailed_risk_switch_is_public_and_saved_as_boolean(self):
         with patch.object(gr, "load_config"), patch.object(gr, "save_config") as save:
             result = _apply_config_updates({"sso_detailed_risk_check": True})
