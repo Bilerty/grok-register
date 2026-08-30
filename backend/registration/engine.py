@@ -3244,9 +3244,9 @@ def run_registration(count):
             local_fail = 0
             local_fail_stats = empty_fail_stats()
             try:
-                _pp.bind_task(scope_key=f"w{wid + 1}")
                 boot_started_at = time.time()
                 try:
+                    _pp.bind_task(scope_key=f"w{wid + 1}")
                     start_browser(
                         log_callback=lambda m: registration_log(f"[W{wid+1}] {m}"),
                         cancel_callback=controller.should_stop,
@@ -3549,9 +3549,9 @@ def run_registration(count):
         return
 
     try:
-        _pp.bind_task(scope_key="reg-1")
         boot_started_at = time.time()
         try:
+            _pp.bind_task(scope_key="reg-1")
             start_browser(log_callback=registration_log, cancel_callback=controller.should_stop)
         except Exception as boot_exc:
             if controller.should_stop():
