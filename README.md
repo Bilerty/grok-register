@@ -28,6 +28,7 @@
 - 上游已不再下发 `bfs`，本项目不能判断账号是否风控；必须联动 [GrokIQ](https://github.com/kaibush/grok-iq) 做账号级降智检测和自动隔离
 - Grok Build 导入成功后通过持久 Webhook 通知 GrokIQ，由 GrokIQ 自动探针并隔离异常账号
 - JSON 查看、复制和下载
+- 代理池与粘性出口（fork 定制）：多节点轮询/随机/最少使用，worker 级粘性绑定，节点健康管理，出口 IP 命中风控名单自动隔离
 - 首次访问创建唯一管理员账号
 - Docker Compose 部署，支持无桌面 Linux 服务器
 - GitHub Actions 自动构建 GHCR 镜像
@@ -221,7 +222,14 @@ Windows 启动：
 | `email_provider` | 邮箱服务商 |
 | `register_count` | 注册数量 |
 | `register_workers` | 并发数量，默认 1 |
-| `proxy` | 注册和 OAuth 请求使用的 HTTP(S) 代理；支持 `http://host:port` 和 `http://user:password@host:port`，凭据中的特殊字符需使用 URL 百分号编码。注册风控会记录浏览器识别到的出口 IP；下次若仍是该 IP，会重启浏览器换出口后再注册。风控名单在「账号中心 → 出口 IP 风控」查看，单账号出口 IP 在「账号中心 → 账号管理 → 查看」详情中 |
+| `proxy` | 注册和 OAuth 请求使用的 HTTP(S) 代理；支持 `http://host:port` 和 `http://user:password@host:port`，凭据中的特殊字符需使用 URL 百分号编码。注册风控会记录浏览器识别到的出口 IP；下次若仍是该 IP，会重启浏览器换出口后再注册。风控名单在「账号中心 → 出口 IP 风控」查看，单账号出口 IP 在「账号中心 → 账号管理 → 查看」详情中。多行内容（每行一条）即代理池；配合下方 `proxy_*` 配置使用 |
+| `proxy_mode` | `static` 单代理 / `pool` 代理池 / `sticky_template` 粘性模板（含 `{account}`、`{email}` 占位符）；留空按内容自动识别 |
+| `proxy_selection` | 池选择策略：`round_robin`（默认）/ `random` / `least_used` |
+| `proxy_sticky_scope` | 粘性范围：`task`（默认，注册 worker 绑定节点，浏览器与 HTTP 同出口）/ `none`（每次选择可能变化） |
+| `proxy_file` | 池文件路径，每行一条代理，与 `proxy` 多行内容合并（pool 模式） |
+| `proxy_username` / `proxy_password` | 池级凭据；池条目自带认证时以条目为准 |
+| `proxy_cooldown_seconds` | 注册风控后节点冷却秒数，默认 600；0 表示不冷却 |
+| `proxy_probe_once_per_batch` | 批次开始前统一预探测池节点（默认开启）；也可在「代理池」页手动探测 |
 | `browser_engine` | 浏览器后端：`camoufox`（默认）或 `cloakbrowser` |
 | `browser_headless` | 本机无头模式；Docker 中强制关闭 |
 | `browser_low_traffic_mode` | 低流量注册模式，默认开启；复用静态资源缓存并跳过非注册必需资源 |
@@ -250,6 +258,21 @@ GrokIQ 检测完成后会发送回调通知 `POST /api/integrations/grokiq/notif
 统一 Compose 中，`GROKIQ_REGISTER_PROBE_STABILIZATION_SECONDS` 控制 GrokIQ 收到新账号事件后等待多久再创建首次探针，默认 `15` 秒，设为 `0` 可关闭等待。
 
 配置模板见 [`config.example.json`](config.example.json)。
+
+## 代理池（fork 定制）
+
+「系统配置 → 代理池」提供池配置与节点健康管理面板（`/settings/proxy`）：
+
+- **出口统一**：注册 worker 启动时从池中绑定一个健康节点，此后该 worker 的浏览器与
+  xAI/OAuth/CPA 等 HTTP 请求全部经由 `get_proxies()` 使用同一出口，避免 IP 混用。
+- **健康管理**：节点状态为 `healthy / unreachable / cooldown / flagged`。批次开始前统一
+  预探测（记录出口 IP 与延迟）；注册触发风控时当前节点进入冷却；节点探测出口 IP 命中
+  上游「出口 IP 风控」名单时自动隔离，探测恢复或手动复位后重新可用。
+- **自动换节点**：任务中节点失效（冷却/被隔离）时，下一次注册尝试自动切换新节点；
+  v1.0.9 每个账号轮次之间浏览器会重启，新出口自然生效。
+- **持久化**：节点状态保存于 `data/proxy_pool_state.json`，重启不丢；面板导入/移除节点
+  会同步写回配置，重建池后一致。
+- **安全**：节点原文不返回给前端，列表脱敏展示，操作以稳定 key 定位。
 
 ## 数据目录
 
