@@ -662,6 +662,14 @@ def _detect_mode(proxy_value: str, raw_mode: str) -> str:
     return MODE_STATIC
 
 
+def detect_mode(proxy_value: str, raw_mode: str = "") -> str:
+    """按配置推断代理模式（显式模式优先，供管理端导入/清空前判断）。"""
+    value = str(raw_mode or "").strip().lower()
+    if value in VALID_MODES:
+        return value
+    return _detect_mode(proxy_value, value)
+
+
 def build_pool_from_config(
     config_get: Callable[[str, object], object],
     file_read: Optional[Callable[[str], str]] = None,

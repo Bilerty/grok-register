@@ -29,7 +29,8 @@ from .jobs import job_coordinator
 from .relogin_jobs import relogin_coordinator
 from .sso_check_jobs import sso_check_coordinator
 from .update_check import ReleaseUpdateService
-from backend.integrations.proxy import validate_http_proxy_url
+from backend.integrations.proxy import redact_proxy_url, validate_http_proxy_url
+from backend.integrations import proxy_pool
 from backend.integrations import grokiq
 from backend.shared.paths import DATA_ROOT, PROJECT_ROOT, STATIC_ROOT
 from backend.shared.version import current_version
@@ -72,6 +73,14 @@ CONFIG_PUBLIC_KEYS = (
     "outlookemail_pick_mode",
     "outlookemail_disable_after_cpa_success",
     "proxy",
+    "proxy_mode",
+    "proxy_selection",
+    "proxy_sticky_scope",
+    "proxy_file",
+    "proxy_username",
+    "proxy_password",
+    "proxy_cooldown_seconds",
+    "proxy_probe_once_per_batch",
     "enable_nsfw",
     "debug_mode",
     "browser_engine",
@@ -136,6 +145,7 @@ SENSITIVE_HINT_KEYS = {
     "yyds_api_key",
     "yyds_jwt",
     "proxy",
+    "proxy_password",
 }
 
 
@@ -168,6 +178,14 @@ class LoginBody(BaseModel):
 
 class FlaggedExitIpBody(BaseModel):
     ip: str = ""
+
+
+class ProxyPoolImportBody(BaseModel):
+    lines: List[str] = Field(default_factory=list)
+
+
+class ProxyPoolKeyBody(BaseModel):
+    key: str = ""
 
 
 def _batch_account_ids(ids: List[int]) -> List[int]:
@@ -1464,6 +1482,89 @@ def create_app() -> FastAPI:
         if not deleted:
             raise HTTPException(status_code=404, detail="风控名单中没有这个出口 IP")
         return {"ok": True, "deleted": ip}
+
+    # ---------------- 代理池（fork 定制） ----------------
+
+    def _pool_url_by_key(key: str) -> str:
+        url = proxy_pool.get_pool().find_url_by_key(str(key or "").strip())
+        if not url:
+            raise HTTPException(status_code=404, detail="代理池中没有这个节点")
+        return url
+
+    @app.get("/api/proxy-pool")
+    def api_proxy_pool_get() -> Dict[str, Any]:
+        info = proxy_pool.describe_pool()
+        for node in info.get("nodes") or []:
+            node["url"] = redact_proxy_url(node.get("url", ""))
+        return {"ok": True, **info}
+
+    @app.post("/api/proxy-pool/import")
+    def api_proxy_pool_import(body: ProxyPoolImportBody) -> Dict[str, Any]:
+        gr = _gr()
+        lines = [str(line or "").strip() for line in (body.lines or []) if str(line or "").strip()]
+        if not lines:
+            raise HTTPException(status_code=400, detail="请提供要导入的代理列表")
+        # 配置还是单代理/空时，导入节点自动切换为 pool 模式
+        if (
+            proxy_pool.detect_mode(
+                str(gr.config.get("proxy") or ""), str(gr.config.get("proxy_mode") or "")
+            )
+            != proxy_pool.MODE_POOL
+        ):
+            gr.config["proxy_mode"] = proxy_pool.MODE_POOL
+        result = proxy_pool.get_pool().add_urls(lines)
+        if result["added"]:
+            existing = str(gr.config.get("proxy") or "").strip()
+            gr.config["proxy"] = "\n".join([existing] + result["added"]) if existing else "\n".join(result["added"])
+            gr.save_config()
+            result["added"] = [redact_proxy_url(url) for url in result["added"]]
+        return {"ok": True, **result}
+
+    @app.post("/api/proxy-pool/probe")
+    def api_proxy_pool_probe() -> Dict[str, Any]:
+        return {"ok": True, **proxy_pool.get_pool().probe_all()}
+
+    @app.post("/api/proxy-pool/node/probe")
+    def api_proxy_pool_node_probe(body: ProxyPoolKeyBody) -> Dict[str, Any]:
+        url = _pool_url_by_key(body.key)
+        result = proxy_pool.get_pool().probe_node(url)
+        return {"ok": bool(result.get("ok")), "result": result}
+
+    @app.post("/api/proxy-pool/node/clear-cooldown")
+    def api_proxy_pool_node_clear_cooldown(body: ProxyPoolKeyBody) -> Dict[str, Any]:
+        url = _pool_url_by_key(body.key)
+        changed = proxy_pool.get_pool().clear_cooldown(url)
+        return {"ok": True, "changed": changed}
+
+    @app.post("/api/proxy-pool/node/remove")
+    def api_proxy_pool_node_remove(body: ProxyPoolKeyBody) -> Dict[str, Any]:
+        gr = _gr()
+        url = _pool_url_by_key(body.key)
+        removed = proxy_pool.get_pool().remove_url(url)
+        if removed:
+            lines = [
+                line.strip()
+                for line in str(gr.config.get("proxy") or "").splitlines()
+                if line.strip() and line.strip() != url
+            ]
+            gr.config["proxy"] = "\n".join(lines)
+            gr.save_config()
+        return {"ok": True, "removed": removed, "removed_url": redact_proxy_url(url)}
+
+    @app.post("/api/proxy-pool/clear")
+    def api_proxy_pool_clear() -> Dict[str, Any]:
+        gr = _gr()
+        if (
+            proxy_pool.detect_mode(
+                str(gr.config.get("proxy") or ""), str(gr.config.get("proxy_mode") or "")
+            )
+            != proxy_pool.MODE_POOL
+        ):
+            raise HTTPException(status_code=400, detail="仅 pool 模式支持清空节点")
+        removed = proxy_pool.get_pool().clear()
+        gr.config["proxy"] = ""
+        gr.save_config()
+        return {"ok": True, "removed": removed}
 
     @app.get("/api/config")
     def api_config_get() -> Dict[str, Any]:
