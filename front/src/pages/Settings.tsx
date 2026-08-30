@@ -13,8 +13,7 @@ import {
   ShieldCheck,
   Webhook,
 } from "lucide-react";
-import { api } from "@/lib/api";
-import { cn } from "@/lib/utils";
+import { api, type OutlookEmailGroup } from "@/lib/api";
 import {
   Button,
   buttonVariants,
@@ -107,7 +106,7 @@ function ToggleRow({
   description,
   checked,
   onCheckedChange,
-  disabled = false,
+  disabled,
 }: {
   title: string;
   description?: string;
@@ -116,15 +115,12 @@ function ToggleRow({
   disabled?: boolean;
 }) {
   return (
-    <div className={cn(
-      "flex min-h-16 items-center justify-between gap-4 rounded-xl border bg-muted/35 px-3 py-3 sm:px-4",
-      disabled && "opacity-60"
-    )}>
+    <div className={`flex min-h-16 items-center justify-between gap-4 rounded-xl border bg-muted/35 px-3 py-3 sm:px-4 ${disabled ? "opacity-60" : ""}`}>
       <div className="min-w-0">
         <div className="text-sm font-medium text-foreground">{title}</div>
         {description ? <div className="mt-0.5 text-xs leading-5 text-muted-foreground">{description}</div> : null}
       </div>
-      <Switch checked={checked} onCheckedChange={onCheckedChange} label={title} disabled={disabled} />
+      <Switch checked={checked} onCheckedChange={onCheckedChange} disabled={disabled} label={title} />
     </div>
   );
 }
@@ -189,38 +185,6 @@ function ConfigField({
           </button>
         ) : null}
       </div>
-      {helper ? <p className="text-xs leading-5 text-muted-foreground">{helper}</p> : null}
-    </div>
-  );
-}
-
-function ConfigSelect({
-  config,
-  onFieldChange,
-  label,
-  field,
-  options,
-  helper = "",
-}: {
-  config: Record<string, any>;
-  onFieldChange: (key: string, value: any) => void;
-  label: string;
-  field: string;
-  options: { value: string; label: string }[];
-  helper?: string;
-}) {
-  return (
-    <div className="min-w-0 space-y-2">
-      <Label htmlFor={field}>{label}</Label>
-      <Select
-        id={field}
-        value={config[field] ?? ""}
-        onChange={(event) => onFieldChange(field, event.target.value)}
-      >
-        {options.map((item) => (
-          <option key={item.value} value={item.value}>{item.label}</option>
-        ))}
-      </Select>
       {helper ? <p className="text-xs leading-5 text-muted-foreground">{helper}</p> : null}
     </div>
   );
@@ -321,6 +285,54 @@ function CloudflareHelp() {
   );
 }
 
+function outlookGroupLabel(group: OutlookEmailGroup) {
+  return `${group.name}（${group.account_count}）`;
+}
+
+function OutlookGroupSelect({
+  label,
+  field,
+  helper = "",
+  emptyLabel,
+  config,
+  onFieldChange,
+  groups,
+  loading,
+}: {
+  label: string;
+  field: string;
+  helper?: string;
+  emptyLabel: string;
+  config: Record<string, any>;
+  onFieldChange: (key: string, value: any) => void;
+  groups: OutlookEmailGroup[];
+  loading: boolean;
+}) {
+  const value = String(config[field] ?? "");
+  const options = groups.filter((group) => !group.is_system || String(group.id) === value);
+  const hasCurrent = !value || options.some((group) => String(group.id) === value);
+  return (
+    <div className="min-w-0 space-y-2">
+      <Label htmlFor={field}>{label}</Label>
+      <Select
+        id={field}
+        value={value}
+        disabled={loading}
+        onChange={(event) => onFieldChange(field, event.target.value)}
+      >
+        <option value="">{emptyLabel}</option>
+        {hasCurrent ? null : <option value={value}>{`分组 ${value}（未找到）`}</option>}
+        {options.map((group) => (
+          <option key={group.id} value={String(group.id)}>
+            {outlookGroupLabel(group)}
+          </option>
+        ))}
+      </Select>
+      {helper ? <p className="text-xs leading-5 text-muted-foreground">{helper}</p> : null}
+    </div>
+  );
+}
+
 export function SettingsPage({ section = "registration" }: { section?: SettingsSection }) {
   const [searchParams] = useSearchParams();
   const [config, setConfig] = useState<Record<string, any>>({});
@@ -329,6 +341,9 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
   const [toast, setToast] = useState<{ message: string; tone?: "default" | "success" | "error" }>({
     message: "",
   });
+  const [outlookGroups, setOutlookGroups] = useState<OutlookEmailGroup[]>([]);
+  const [outlookGroupsLoading, setOutlookGroupsLoading] = useState(false);
+  const [outlookGroupsError, setOutlookGroupsError] = useState("");
 
   const showToast = (message: string, tone: "default" | "success" | "error" = "default") => {
     setToast({ message, tone });
@@ -349,9 +364,29 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
     }
   };
 
+  const loadOutlookGroups = async () => {
+    setOutlookGroupsLoading(true);
+    setOutlookGroupsError("");
+    try {
+      const data = await api.outlookemailGroups();
+      setOutlookGroups(Array.isArray(data.groups) ? data.groups : []);
+    } catch (err: any) {
+      setOutlookGroups([]);
+      setOutlookGroupsError(err.message || "分组加载失败");
+    } finally {
+      setOutlookGroupsLoading(false);
+    }
+  };
+
   useEffect(() => {
     load();
   }, []);
+
+  useEffect(() => {
+    if (section === "outlook") {
+      void loadOutlookGroups();
+    }
+  }, [section]);
 
   const setField = (key: string, value: any) => {
     setConfig((previous) => ({ ...previous, [key]: value }));
@@ -367,6 +402,9 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
       const data = await api.saveConfig(config);
       setConfig(data.config || config);
       showToast(`已保存 ${data.changed?.length || 0} 项配置`, "success");
+      if (section === "outlook") {
+        void loadOutlookGroups();
+      }
     } catch (err: any) {
       showToast(err.message || "保存失败", "error");
     } finally {
@@ -374,7 +412,21 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
     }
   };
 
-  const meta = SECTION_META[section];
+  const isRegistrationWorkspace = section === "registration" || section === "tokenauth";
+  const [registrationTab, setRegistrationTab] = useState<"general" | "tokenauth">(() =>
+    section === "tokenauth" || searchParams.get("tab") === "tokenauth" ? "tokenauth" : "general"
+  );
+  const [generalTab, setGeneralTab] = useState<"task" | "browser" | "behavior">("task");
+  const [authTab, setAuthTab] = useState<"conversion" | "cpa" | "grok2api" | "sub2api">("conversion");
+  const meta = isRegistrationWorkspace ? SECTION_META.registration : SECTION_META[section];
+
+  const selectRegistrationTab = (tab: "general" | "tokenauth") => {
+    setRegistrationTab(tab);
+    const next = new URLSearchParams(searchParams);
+    if (tab === "tokenauth") next.set("tab", "tokenauth");
+    else next.delete("tab");
+    window.history.replaceState(null, "", `${window.location.pathname}${next.toString() ? `?${next}` : ""}`);
+  };
 
   return (
     <div className="space-y-5 sm:space-y-6">
@@ -395,8 +447,37 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
         }
       />
 
+      {isRegistrationWorkspace ? (
+        <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-sky-50/70 p-2 shadow-sm">
+          <div className="grid grid-cols-2 gap-1 rounded-xl bg-slate-100/80 p-1" role="tablist" aria-label="注册设置分类">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={registrationTab === "general"}
+              onClick={() => selectRegistrationTab("general")}
+              className={`flex items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-sm font-medium transition ${registrationTab === "general" ? "bg-white text-sky-700 shadow-sm ring-1 ring-sky-100" : "text-slate-500 hover:bg-white/70 hover:text-slate-700"}`}
+            >
+              <Settings2 className="h-4 w-4" aria-hidden="true" />
+              基础注册
+              <span className="hidden text-xs font-normal text-slate-400 sm:inline">邮箱、代理与浏览器</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={registrationTab === "tokenauth"}
+              onClick={() => selectRegistrationTab("tokenauth")}
+              className={`flex items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-sm font-medium transition ${registrationTab === "tokenauth" ? "bg-white text-violet-700 shadow-sm ring-1 ring-violet-100" : "text-slate-500 hover:bg-white/70 hover:text-slate-700"}`}
+            >
+              <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+              授权转换
+              <span className="hidden text-xs font-normal text-slate-400 sm:inline">CPA、Grok2API 与 Sub2API</span>
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       <div className="space-y-4">
-        {section === "registration" ? (
+        {isRegistrationWorkspace && registrationTab === "general" ? (
         <Card>
           <CardHeader className="flex-row items-start gap-3">
             <SectionIcon><Settings2 className="h-5 w-5" aria-hidden="true" /></SectionIcon>
@@ -405,7 +486,29 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
               <CardDescription>邮箱来源、代理、数量、并发和浏览器运行方式。</CardDescription>
             </div>
           </CardHeader>
-          <CardContent className="grid gap-4 sm:grid-cols-2">
+          <CardContent className="space-y-5">
+            <div className="grid grid-cols-3 gap-1 rounded-xl border bg-muted/30 p-1" role="tablist" aria-label="基础注册设置分类">
+              {([
+                ["task", "注册任务", "邮箱、数量与并发"],
+                ["browser", "网络浏览器", "代理、后端与语言"],
+                ["behavior", "运行策略", "流量、调试与清理"],
+              ] as const).map(([value, label, hint]) => (
+                <button
+                  key={value}
+                  type="button"
+                  role="tab"
+                  aria-selected={generalTab === value}
+                  onClick={() => setGeneralTab(value)}
+                  className={`rounded-lg px-2 py-2 text-center transition ${generalTab === value ? "bg-white text-sky-700 shadow-sm ring-1 ring-slate-200" : "text-muted-foreground hover:bg-white/70 hover:text-foreground"}`}
+                >
+                  <span className="block text-sm font-medium">{label}</span>
+                  <span className="mt-0.5 hidden text-[11px] sm:block">{hint}</span>
+                </button>
+              ))}
+            </div>
+
+            {generalTab === "task" ? (
+            <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2 sm:col-span-2">
               <Label htmlFor="email_provider">邮箱服务商</Label>
               <Select
@@ -437,78 +540,6 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                 <ArrowRight className="h-4 w-4" aria-hidden="true" />
               </Link>
             </div>
-            <ConfigField
-              {...fieldState}
-              label="网络代理"
-              field="proxy"
-              type="password"
-              placeholder="http://user:password@host:port"
-              helper="单代理：一个 http(s) 地址；代理池：每行一个地址（proxy_mode=pool）；粘性模板：地址含 {account} 或 {email} 占位符（proxy_mode=sticky_template）。含特殊字符的凭据建议改用下方「代理用户名/密码」原始配置，无需手工编码。"
-            />
-            <ConfigSelect
-              {...fieldState}
-              label="代理模式"
-              field="proxy_mode"
-              options={[
-                { value: "", label: "自动推断（推荐）" },
-                { value: "static", label: "static · 单代理" },
-                { value: "pool", label: "pool · 代理池" },
-                { value: "sticky_template", label: "sticky_template · 粘性模板" },
-              ]}
-              helper="留空自动推断：多行为 pool，含 {account}/{email} 占位符为 sticky_template，否则 static。"
-            />
-            <ConfigSelect
-              {...fieldState}
-              label="池选择器"
-              field="proxy_selection"
-              options={[
-                { value: "round_robin", label: "round_robin · 轮询" },
-                { value: "random", label: "random · 随机" },
-                { value: "least_used", label: "least_used · 最少使用" },
-              ]}
-              helper="代理池分配策略；选择时对节点实时探测，不可达/冷却中的节点自动排除不参与调度。"
-            />
-            <ConfigSelect
-              {...fieldState}
-              label="池粘性作用域"
-              field="proxy_sticky_scope"
-              options={[
-                { value: "task", label: "task · 同任务同出口（默认）" },
-                { value: "account", label: "account · 按账号" },
-                { value: "none", label: "none · 不粘性" },
-              ]}
-              helper="同一任务或账号在注册、SSO、OAuth 全链路使用同一出口。"
-            />
-            <ConfigField
-              {...fieldState}
-              label="代理池文件"
-              field="proxy_file"
-              placeholder="data/proxies.txt（可选）"
-              helper="每行一个 http(s) 代理地址，与 proxy 多行内容合并。"
-            />
-            <ConfigField
-              {...fieldState}
-              label="代理用户名"
-              field="proxy_username"
-              placeholder="可选，原样填写"
-              helper="覆盖代理地址中的用户名；特殊字符无需百分号编码。"
-            />
-            <ConfigField
-              {...fieldState}
-              label="代理密码"
-              field="proxy_password"
-              type="password"
-              placeholder="可选，原样填写"
-              helper="覆盖代理地址中的密码；特殊字符无需百分号编码。"
-            />
-            <ConfigField
-              {...fieldState}
-              label="池节点冷却时长（秒）"
-              field="proxy_cooldown_seconds"
-              type="number"
-              placeholder="600"
-              helper="代理池节点被风控或探测失败后进入冷却，期间不参与调度；0 表示不冷却。"
-            />
             <ConfigField {...fieldState}
               label="账号间隔（秒）"
               field="account_interval"
@@ -518,6 +549,21 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
             <ConfigField {...fieldState} label="注册数量" field="register_count" type="number" />
             <ConfigField {...fieldState} label="并发浏览器数" field="register_workers" type="number" />
             <ConfigField {...fieldState} label="日志级别" field="log_level" placeholder="info（普通）/ debug（详细）" />
+            </div>
+            ) : null}
+
+            {generalTab === "browser" ? (
+            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <ConfigField
+                {...fieldState}
+                label="网络代理"
+                field="proxy"
+                type="password"
+                placeholder="http://user:password@host:port"
+                helper="支持无认证或用户名/密码认证的 HTTP(S) 代理；凭据含 @、:、/、#、% 等特殊字符时请使用 URL 百分号编码，例如 @ 写成 %40。注册浏览器与 xAI/OAuth 请求会共用此代理。"
+              />
+            </div>
             <div className="min-w-0 space-y-2">
               <Label htmlFor="browser_engine">浏览器后端</Label>
               <Select
@@ -545,6 +591,10 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                 固定注册页面语言，不跟随代理出口自动切换。
               </p>
             </div>
+            </div>
+            ) : null}
+
+            {generalTab === "behavior" ? (
             <div className="space-y-3 sm:col-span-2">
               <ToggleRow
                 title="注册后开启 NSFW"
@@ -566,10 +616,19 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
               />
               <ToggleRow
                 title="低流量注册模式"
-                description="保持账号独立浏览器，复用 CDN 静态资源缓存并跳过媒体、字体及非注册必需的第三方资源"
                 checked={!!config.browser_low_traffic_mode}
                 onCheckedChange={(value) => setField("browser_low_traffic_mode", value)}
               />
+              {config.browser_low_traffic_mode ? (
+                <Select
+                  id="browser_traffic_savings_level"
+                  value={config.browser_traffic_savings_level === "standard" ? "standard" : "more"}
+                  onChange={(event) => setField("browser_traffic_savings_level", event.target.value)}
+                >
+                  <option value="standard">较少节省</option>
+                  <option value="more">更多节省</option>
+                </Select>
+              ) : null}
               <ToggleRow
                 title="停止时关闭浏览器"
                 description="收到停止请求后清理当前浏览器实例"
@@ -577,13 +636,36 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                 onCheckedChange={(value) => setField("close_browser_on_stop", value)}
               />
             </div>
+            ) : null}
           </CardContent>
         </Card>
         ) : null}
 
         {/* TokenAuth：授权转换 + CPA / Grok2API / Sub2API 三目标 */}
-        {section === "tokenauth" || section === "cpa" || section === "grok2api" ? (
+        {isRegistrationWorkspace && registrationTab === "tokenauth" ? (
         <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-2 rounded-2xl border bg-card p-2 shadow-sm sm:grid-cols-4" role="tablist" aria-label="授权转换设置分类">
+            {([
+              ["conversion", "转换策略", "SSO 与风控"],
+              ["cpa", "CPA", "本地与远程"],
+              ["grok2api", "Grok2API", "导入与联动"],
+              ["sub2api", "Sub2API", "SSO 直传"],
+            ] as const).map(([value, label, hint]) => (
+              <button
+                key={value}
+                type="button"
+                role="tab"
+                aria-selected={authTab === value}
+                onClick={() => setAuthTab(value)}
+                className={`rounded-xl border px-3 py-2.5 text-left transition ${authTab === value ? "border-violet-200 bg-violet-50 text-violet-700 shadow-sm" : "border-transparent bg-muted/30 text-muted-foreground hover:border-slate-200 hover:bg-white hover:text-foreground"}`}
+              >
+                <span className="block text-sm font-semibold">{label}</span>
+                <span className="mt-0.5 block text-[11px] opacity-75">{hint}</span>
+              </button>
+            ))}
+          </div>
+
+          {authTab === "conversion" ? (
           <Card>
             <CardHeader className="flex-row items-start gap-3">
               <SectionIcon><ShieldCheck className="h-5 w-5" aria-hidden="true" /></SectionIcon>
@@ -609,6 +691,14 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                   onCheckedChange={(value) => setField("sso_detailed_risk_check", value)}
                 />
               </div>
+              <div className="sm:col-span-2">
+                <ToggleRow
+                  title="注册后检查 SSO 风控"
+                  description="注册拿到 SSO 后复查 grok.com botFlag；上游未发送该字段时会进行多次等待，默认关闭"
+                  checked={!!config.cpa_registration_risk_check}
+                  onCheckedChange={(value) => setField("cpa_registration_risk_check", value)}
+                />
+              </div>
               <div className="space-y-2 sm:col-span-2">
                 <Label htmlFor="cpa_token_mode">授权转换方式</Label>
                 <Select
@@ -621,8 +711,10 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
               </div>
             </CardContent>
           </Card>
+          ) : null}
 
           <div className="grid gap-4">
+            {authTab === "cpa" ? (
             <Card>
               <CardHeader>
                 <CardTitle>CPA 目标</CardTitle>
@@ -640,7 +732,9 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                 <ConfigField {...fieldState} label="远程管理密钥" field="cpa_management_key" type="password" />
               </CardContent>
             </Card>
+            ) : null}
 
+            {authTab === "grok2api" ? (
             <div className="grid gap-4 lg:grid-cols-2">
               <Card>
                 <CardHeader>
@@ -687,13 +781,6 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                       disabled={!config.grok2api_auto_import}
                     />
                   </div>
-                  <ToggleRow
-                    title="三渠道推送同一代理"
-                    description="导入后把 build/web/console 账号绑定到注册时使用的同一出口代理；目标平台已有同出口节点时直接复用，否则自动创建节点并写入该代理。总开关关闭时强制关闭。"
-                    checked={!!config.grok2api_auto_import && !!config.grok2api_same_proxy}
-                    disabled={!config.grok2api_auto_import}
-                    onCheckedChange={(value) => setField("grok2api_same_proxy", value)}
-                  />
                 </CardContent>
               </Card>
 
@@ -703,7 +790,7 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                   <div>
                     <CardTitle>GrokIQ Webhook</CardTitle>
                     <CardDescription>
-                      仅在 grok_build 导入成功后发送账号已导入事件；注册机不查询监控处理结果。
+                      导入成功后发送账号已导入事件；GrokIQ 可通过回调通知把检测结果发到本机，不会自动删除账号。
                     </CardDescription>
                   </div>
                 </CardHeader>
@@ -732,12 +819,14 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                     label="请求超时（秒）"
                     field="grokiq_webhook_timeout_seconds"
                     type="number"
-                    helper="注册机只判断 Webhook 是否收到 HTTP 2xx，不读取后续探针或风险结果"
+                    helper="导入通知超时。检测结果由 GrokIQ 异步回调通知 /api/integrations/grokiq/notify，共用同一 Token"
                   />
                 </CardContent>
               </Card>
             </div>
+            ) : null}
 
+            {authTab === "sub2api" ? (
             <Card>
               <CardHeader>
                 <CardTitle>Sub2API 目标</CardTitle>
@@ -808,6 +897,7 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                 </p>
               </CardContent>
             </Card>
+            ) : null}
           </div>
         </div>
         ) : null}
@@ -943,7 +1033,31 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                 自动停用接口仅适用于 accounts 来源。
               </p>
             </div>
-            <ConfigField {...fieldState} label="分组 ID" field="outlookemail_group_id" />
+            <OutlookGroupSelect
+              {...fieldState}
+              label="取号分组"
+              field="outlookemail_group_id"
+              emptyLabel="全部"
+              groups={outlookGroups}
+              loading={outlookGroupsLoading}
+            />
+            <OutlookGroupSelect
+              {...fieldState}
+              label="验证码超时移到"
+              field="outlookemail_code_timeout_group_id"
+              emptyLabel="不移动"
+              groups={outlookGroups}
+              loading={outlookGroupsLoading}
+            />
+            <div className="sm:col-span-2 flex flex-wrap items-center gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={() => void loadOutlookGroups()} disabled={outlookGroupsLoading}>
+                <RefreshCw className={`h-3.5 w-3.5 ${outlookGroupsLoading ? "animate-spin" : ""}`} aria-hidden="true" />
+                刷新分组
+              </Button>
+              {outlookGroupsError ? (
+                <p className="text-xs text-red-600">{outlookGroupsError}</p>
+              ) : null}
+            </div>
             <div className="min-w-0 space-y-2">
               <Label htmlFor="outlookemail_pick_mode">邮箱选取方式</Label>
               <Select

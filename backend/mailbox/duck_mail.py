@@ -207,7 +207,7 @@ def wait_for_code(
     token: str,
     email: str,
     *,
-    timeout: int = 180,
+    timeout: int = 60,
     poll_interval: int = 3,
     extract_code: Callable[[str, str], Optional[str]],
     raise_if_cancelled: Callable[[Optional[Callable[[], bool]]], None],

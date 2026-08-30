@@ -1,322 +1,360 @@
-"""代理池 / 粘性代理框架测试。"""
+# -*- coding: utf-8 -*-
+"""proxy_pool 单元测试：模式/选择/粘性租约/健康管理/持久化/线程绑定。"""
 
-import json
+from __future__ import annotations
+
+import os
+import tempfile
+import threading
 import time
 import unittest
 
-from backend.integrations.proxy import build_proxy_url_with_credentials
 from backend.integrations import proxy_pool as pp
+from backend.integrations.proxy_pool import (
+    MODE_POOL,
+    MODE_STICKY_TEMPLATE,
+    NodeState,
+    ProxyConfigError,
+    ProxyPool,
+    ProxyPoolExhausted,
+    build_pool_from_config,
+    node_key,
+)
 
 
-def _config(**overrides):
-    base = {
-        "proxy": "",
-        "proxy_mode": "",
-        "proxy_selection": "round_robin",
-        "proxy_sticky_scope": "task",
-        "proxy_file": "",
-        "proxy_username": "",
-        "proxy_password": "",
-    }
-    base.update(overrides)
-    return lambda key, default=None: base.get(key, default)
+def make_pool(**kwargs) -> ProxyPool:
+    defaults = dict(
+        mode=MODE_POOL,
+        urls=["http://a:1", "http://b:2", "http://c:3"],
+        selection="round_robin",
+        sticky_scope="none",
+        cooldown_seconds=0,
+    )
+    defaults.update(kwargs)
+    return ProxyPool(**defaults)
 
 
-class BuildPoolTests(unittest.TestCase):
+class BuildFromConfigTests(unittest.TestCase):
+    def test_mode_autodetect_static(self):
+        pool = build_pool_from_config(lambda key, default=None: {"proxy": "http://p:1"}.get(key, default))
+        self.assertEqual(pool.mode, "static")
+        self.assertEqual(pool.urls, ["http://p:1"])
 
-    def test_empty_config_gives_empty_static_pool(self):
-        pool = pp.build_pool_from_config(_config())
-        self.assertEqual(pool.mode, pp.MODE_STATIC)
-        self.assertTrue(pool.empty())
-        self.assertEqual(pool.resolve(), "")
-
-    def test_single_proxy_is_static_by_default(self):
-        pool = pp.build_pool_from_config(_config(proxy="http://127.0.0.1:7890"))
-        self.assertEqual(pool.mode, pp.MODE_STATIC)
-        self.assertEqual(pool.resolve(), "http://127.0.0.1:7890")
-
-    def test_multiline_proxy_auto_detects_pool(self):
-        proxy = "http://127.0.0.1:8001\nhttp://127.0.0.1:8002\n"
-        pool = pp.build_pool_from_config(_config(proxy=proxy))
-        self.assertEqual(pool.mode, pp.MODE_POOL)
-        self.assertEqual(len(pool.urls), 2)
-
-    def test_placeholder_auto_detects_sticky_template(self):
-        proxy = "http://pool-{account}:secret@127.0.0.1:2260"
-        pool = pp.build_pool_from_config(_config(proxy=proxy))
-        self.assertEqual(pool.mode, pp.MODE_STICKY_TEMPLATE)
-        self.assertEqual(
-            pool.resolve(scope_key="reg-7"),
-            "http://pool-reg-7:secret@127.0.0.1:2260",
+    def test_mode_autodetect_pool_by_multiline(self):
+        pool = build_pool_from_config(
+            lambda key, default=None: {"proxy": "http://a:1\nhttp://b:2"}.get(key, default)
         )
+        self.assertEqual(pool.mode, MODE_POOL)
+        self.assertEqual(pool.urls, ["http://a:1", "http://b:2"])
 
-    def test_email_placeholder_uses_alnum_lower_local_part(self):
-        proxy = "http://pool-{email}:secret@127.0.0.1:2260"
-        pool = pp.build_pool_from_config(_config(proxy=proxy))
-        self.assertEqual(
-            pool.resolve(email="User.Name@example.com"),
-            "http://pool-username:secret@127.0.0.1:2260",
+    def test_mode_autodetect_sticky_template(self):
+        pool = build_pool_from_config(
+            lambda key, default=None: {"proxy": "http://u-{account}:1"}.get(key, default)
         )
-
-    def test_invalid_pool_entry_raises(self):
-        with self.assertRaises(pp.ProxyConfigError):
-            pp.build_pool_from_config(_config(proxy="socks5://bad\nhttp://ok:8080"))
+        self.assertEqual(pool.mode, MODE_STICKY_TEMPLATE)
 
     def test_invalid_mode_raises(self):
-        with self.assertRaises(pp.ProxyConfigError):
-            pp.build_pool_from_config(_config(proxy="http://ok:8080", proxy_mode="bogus"))
+        with self.assertRaises(ProxyConfigError):
+            build_pool_from_config(
+                lambda key, default=None: {"proxy": "http://a:1", "proxy_mode": "socks"}.get(key, default)
+            )
+
+    def test_invalid_selection_raises(self):
+        with self.assertRaises(ProxyConfigError):
+            build_pool_from_config(
+                lambda key, default=None: {"proxy": "http://a:1", "proxy_selection": "magic"}.get(key, default)
+            )
+
+    def test_invalid_sticky_scope_raises(self):
+        with self.assertRaises(ProxyConfigError):
+            build_pool_from_config(
+                lambda key, default=None: {"proxy": "http://a:1", "proxy_sticky_scope": "global"}.get(key, default)
+            )
+
+    def test_pool_requires_entries(self):
+        with self.assertRaises(ProxyConfigError):
+            build_pool_from_config(
+                lambda key, default=None: {"proxy": "", "proxy_mode": "pool"}.get(key, default)
+            )
+
+    def test_proxy_file_merged(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+            f.write("http://f:1\n\nhttp://f:2\n")
+            path = f.name
+        try:
+            config = {"proxy": "http://a:1\nhttp://a:1", "proxy_file": path}
+            pool = build_pool_from_config(
+                lambda key, default=None: config.get(key, default),
+                file_read=lambda p: open(p, encoding="utf-8").read(),
+            )
+            self.assertEqual(pool.urls, ["http://a:1", "http://f:1", "http://f:2"])
+        finally:
+            os.unlink(path)
+
+    def test_invalid_pool_entry_raises(self):
+        with self.assertRaises(ProxyConfigError):
+            build_pool_from_config(
+                lambda key, default=None: {"proxy": "http://ok:1\nftp://bad:2"}.get(key, default)
+            )
 
 
 class SelectionTests(unittest.TestCase):
+    def test_round_robin_order(self):
+        pool = make_pool()
+        # sticky_scope=none：每次选取轮转
+        picked = [pool.resolve(f"s{i}") for i in range(3)]
+        self.assertEqual(picked, ["http://a:1", "http://b:2", "http://c:3"])
 
-    def test_round_robin_cycles(self):
-        pool = pp.ProxyPool(pp.MODE_POOL, ["p1", "p2", "p3"])
-        seen = [pool.resolve() for _ in range(6)]
-        self.assertEqual(seen[:3], ["p1", "p2", "p3"])
-        self.assertEqual(seen[3:], ["p1", "p2", "p3"])
+    def test_least_used_prefers_low_usage(self):
+        pool = make_pool(selection="least_used")
+        first = pool.resolve("s")
+        pool._usage[first] = 10
+        self.assertEqual(pool.resolve("t"), "http://b:2")
 
-    def test_random_stays_within_pool(self):
-        pool = pp.ProxyPool(pp.MODE_POOL, ["p1", "p2"], selection=pp.SELECTION_RANDOM)
-        self.assertIn(pool.resolve(), {"p1", "p2"})
+    def test_sticky_lease_keeps_node(self):
+        pool = make_pool(sticky_scope="task")
+        first = pool.resolve("w1")
+        for _ in range(3):
+            self.assertEqual(pool.resolve("w1"), first)
+        self.assertNotEqual(pool.resolve("w2"), first)
 
-    def test_least_used_prefers_less_used(self):
-        pool = pp.ProxyPool(pp.MODE_POOL, ["p1", "p2"], selection=pp.SELECTION_LEAST_USED)
-        first = pool.resolve()
-        second = pool.resolve()
-        self.assertNotEqual(first, second)
+    def test_release_allows_repick(self):
+        pool = make_pool(sticky_scope="task", selection="least_used")
+        first = pool.resolve("w1")
+        pool.release("w1")
+        pool._usage[first] = 99
+        self.assertNotEqual(pool.resolve("w1"), first)
 
+    def test_exhausted_when_no_healthy(self):
+        pool = make_pool(cooldown_seconds=600)
+        for url in pool.urls:
+            pool.report_failure(url, reason="x")
+        with self.assertRaises(ProxyPoolExhausted):
+            pool.resolve("s")
 
-class StickyLeaseTests(unittest.TestCase):
-
-    def test_pool_scope_keeps_same_proxy(self):
-        pool = pp.ProxyPool(pp.MODE_POOL, ["p1", "p2", "p3"])
-        self.assertEqual(pool.resolve(scope_key="a"), pool.resolve(scope_key="a"))
-        a = pool.resolve(scope_key="a")
-        b = pool.resolve(scope_key="b")
-        self.assertNotEqual(a, b)
-
-    def test_release_frees_lease(self):
-        pool = pp.ProxyPool(pp.MODE_POOL, ["p1", "p2", "p3"])
-        a = pool.resolve(scope_key="a")
-        pool.release("a")
-        again = pool.resolve(scope_key="a")
-        self.assertIn(again, {"p1", "p2", "p3"})
-
-    def test_none_scope_ignores_leases(self):
-        pool = pp.ProxyPool(pp.MODE_POOL, ["p1", "p2"], sticky_scope=pp.STICKY_SCOPE_NONE)
-        picks = [pool.resolve(scope_key="a") for _ in range(4)]
-        self.assertEqual(len(set(picks)), 2)
+    def test_cooldown_expiry_restores_node(self):
+        pool = make_pool(cooldown_seconds=600)
+        pool.report_failure("http://a:1", reason="risk")
+        now = time.time()
+        pool._nodes["http://a:1"].cooldown_until = now - 1
+        self.assertEqual(pool._status_of("http://a:1", time.time()), "healthy")
 
 
-class CredentialOverrideTests(unittest.TestCase):
+class ProbeTests(unittest.TestCase):
+    def test_probe_on_pick_marks_unreachable_and_moves_on(self):
+        calls = []
 
-    def test_special_chars_are_encoded(self):
-        url = build_proxy_url_with_credentials(
-            "http://127.0.0.1:2260", username="user@name", password="p@ss:#%"
+        def probe(url):
+            calls.append(url)
+            return {"ok": url != "http://b:2", "egress_ip": "1.2.3.4" if url != "http://b:2" else "", "latency_ms": 5, "error": "" if url != "http://b:2" else "down"}
+
+        pool = make_pool(urls=["http://b:2", "http://a:1"], probe=probe)
+        self.assertEqual(pool.resolve("s"), "http://a:1")
+        self.assertEqual(pool._nodes["http://b:2"].status, "unreachable")
+        self.assertEqual(len(calls), 2)
+
+    def test_probe_all_fail_raises(self):
+        pool = make_pool(
+            cooldown_seconds=600,
+            probe=lambda url: {"ok": False, "egress_ip": "", "latency_ms": None, "error": "down"},
         )
-        self.assertEqual(url, "http://user%40name:p%40ss%3A%23%25@127.0.0.1:2260")
+        with self.assertRaises(ProxyPoolExhausted):
+            pool.resolve("s")
 
-    def test_override_replaces_existing_userinfo(self):
-        url = build_proxy_url_with_credentials(
-            "http://old:old@127.0.0.1:2260", username="new", password="pw"
+    def test_probe_once_per_batch(self):
+        calls = []
+
+        def probe(url):
+            calls.append(url)
+            return {"ok": True, "egress_ip": "", "latency_ms": None, "error": ""}
+
+        pool = make_pool(sticky_scope="task", probe=probe, probe_once_per_batch=True)
+        pool.probe_all()
+        pool.mark_batch_probed()
+        before = len(calls)
+        pool.resolve("w1")
+        pool.resolve("w1")
+        self.assertEqual(len(calls), before)
+        self.assertEqual(pool._nodes["http://a:1"].status, "healthy")
+
+    def test_probe_all_stats(self):
+        def probe(url):
+            return {"ok": url != "http://b:2", "egress_ip": "", "latency_ms": None, "error": ""}
+
+        pool = make_pool(probe=probe)
+        stats = pool.probe_all()
+        self.assertEqual(stats, {"total": 3, "healthy": 2, "unreachable": 1})
+
+    def test_probe_node_renders_credentials(self):
+        seen = []
+
+        def probe(url):
+            seen.append(url)
+            return {"ok": True, "egress_ip": "", "latency_ms": None, "error": ""}
+
+        pool = make_pool(urls=["http://a:1"], username="u", password="p w", probe=probe)
+        pool.probe_node("http://a:1")
+        self.assertEqual(seen, ["http://u:p%20w@a:1"])
+
+
+class HealthTests(unittest.TestCase):
+    def test_report_failure_and_success(self):
+        pool = make_pool(cooldown_seconds=600)
+        pool.report_failure("http://a:1", reason="risk")
+        self.assertEqual(pool._nodes["http://a:1"].status, "cooldown")
+        pool.report_success("http://a:1", egress_ip="1.1.1.1", latency_ms=42)
+        state = pool._nodes["http://a:1"]
+        self.assertEqual(state.status, "healthy")
+        self.assertEqual(state.egress_ip, "1.1.1.1")
+        self.assertEqual(state.latency_ms, 42)
+
+    def test_flagged_ip_skipped_and_isolated(self):
+        pool = make_pool(
+            urls=["http://a:1", "http://b:2"],
+            sticky_scope="task",
+            ip_flagged=lambda ip: ip == "9.9.9.9",
         )
-        self.assertEqual(url, "http://new:pw@127.0.0.1:2260")
+        pool.report_success("http://a:1", egress_ip="9.9.9.9")
+        self.assertEqual(pool.resolve("w1"), "http://b:2")
+        self.assertEqual(pool._nodes["http://a:1"].status, "flagged")
+        self.assertEqual(pool.healthy_count(), 1)
 
-    def test_empty_credentials_leave_url_unchanged(self):
-        url = build_proxy_url_with_credentials("http://u:p@127.0.0.1:2260")
-        self.assertEqual(url, "http://u:p@127.0.0.1:2260")
+    def test_clear_cooldown_resets_flagged(self):
+        pool = make_pool()
+        pool.report_success("http://a:1", egress_ip="9.9.9.9")
+        pool._nodes["http://a:1"].status = "flagged"
+        self.assertTrue(pool.clear_cooldown("http://a:1"))
+        self.assertEqual(pool._nodes["http://a:1"].status, "healthy")
 
-    def test_username_without_password_supported(self):
-        url = build_proxy_url_with_credentials(
-            "http://127.0.0.1:2260", username="onlyuser"
-        )
-        self.assertEqual(url, "http://onlyuser@127.0.0.1:2260")
+    def test_node_list_and_key_lookup(self):
+        pool = make_pool()
+        nodes = pool.node_list()
+        self.assertEqual([n["url"] for n in nodes], pool.urls)
+        self.assertEqual([n["key"] for n in nodes], [node_key(u) for u in pool.urls])
+        self.assertEqual(pool.find_url_by_key(node_key("http://b:2")), "http://b:2")
+        self.assertEqual(pool.find_url_by_key("nope"), "")
 
-    def test_pool_applies_raw_credentials_to_picks(self):
-        pool = pp.build_pool_from_config(_config(
-            proxy="http://127.0.0.1:8001\nhttp://127.0.0.1:8002",
-            proxy_username="u@x",
-            proxy_password="p#1",
-        ))
-        url = pool.render(pool.resolve(scope_key="t"))
-        self.assertEqual(url, "http://u%40x:p%231@127.0.0.1:8001")
+    def test_state_persisted_and_restored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = os.path.join(tmp, "state.json")
+            pool = make_pool(cooldown_seconds=600, state_file=state_file)
+            pool.report_failure("http://a:1", reason="risk")
+            self.assertTrue(os.path.exists(state_file))
+            restored = make_pool(cooldown_seconds=600, state_file=state_file)
+            self.assertEqual(restored._status_of("http://a:1", time.time()), "cooldown")
+
+    def test_add_remove_clear(self):
+        pool = make_pool()
+        result = pool.add_urls(["http://d:4", "http://a:1", "not a url"])
+        self.assertEqual(result["added"], ["http://d:4"])
+        self.assertEqual(result["invalid"], ["not a url"])
+        self.assertTrue(pool.remove_url("http://d:4"))
+        self.assertGreaterEqual(pool.clear(), 3)
+        self.assertTrue(pool.empty())
 
 
-class TaskScopeTests(unittest.TestCase):
+class TemplateTests(unittest.TestCase):
+    def test_account_placeholder_expansion(self):
+        pool = make_pool(mode=MODE_STICKY_TEMPLATE, urls=["http://u-{account}:1"])
+        self.assertEqual(pool.resolve("acc-42"), "http://u-acc-42:1")
 
+    def test_email_placeholder_expansion(self):
+        pool = make_pool(mode=MODE_STICKY_TEMPLATE, urls=["http://u-{email}:1"])
+        self.assertEqual(pool.resolve("s", email="User.Name@example.com"), "http://u-username:1")
+
+
+class CredentialsTests(unittest.TestCase):
+    def test_merge_credentials(self):
+        pool = make_pool(username="u", password="p@w")
+        self.assertEqual(pool.render("http://a:1"), "http://u:p%40w@a:1")
+
+    def test_url_credentials_win(self):
+        pool = make_pool(username="u", password="p")
+        self.assertEqual(pool.render("http://own:p@a:1"), "http://own:p@a:1")
+
+    def test_ipv6_host_bracketed(self):
+        pool = make_pool(username="u", password="p")
+        self.assertEqual(pool.render("http://[::1]:8080"), "http://u:p@[::1]:8080")
+
+
+class SingletonTests(unittest.TestCase):
     def setUp(self):
-        self._saved = (
-            pp._build_pool, pp._config_signature, pp._pool, pp._pool_signature
-        )
-        pp.configure_proxy_pool(lambda: pp.build_pool_from_config(_config(
-            proxy="http://pool-{account}:secret@127.0.0.1:2260",
-        )))
+        pp.release_task()
+        pp.configure_proxy_pool(lambda: ProxyPool("static", []), None)
 
     def tearDown(self):
         pp.release_task()
-        pp._build_pool, pp._config_signature, pp._pool, pp._pool_signature = self._saved
+        pp.configure_proxy_pool(lambda: ProxyPool("static", []), None)
 
-    def test_bind_sets_current_scope(self):
-        url = pp.bind_task(scope_key="reg-9")
-        self.assertEqual(url, "http://pool-reg-9:secret@127.0.0.1:2260")
-        self.assertEqual(pp.current_proxy_url(), url)
+    def test_bind_and_release(self):
+        pool = make_pool(sticky_scope="task", cooldown_seconds=600)
+        pp.configure_proxy_pool(lambda: pool, lambda: ("sig",))
+        rendered = pp.bind_task("w1")
+        self.assertEqual(rendered, "http://a:1")
+        self.assertEqual(pp.current_proxy_url(), "http://a:1")
+        self.assertEqual(pp.current_raw_url(), "http://a:1")
+        self.assertEqual(pp.current_scope_key(), "w1")
+        pool.report_failure("http://a:1", reason="risk")
+        self.assertEqual(pp.current_node_status(), "cooldown")
+        changed = pp.rebind_if_unhealthy()
+        self.assertTrue(changed)
+        self.assertNotEqual(pp.current_raw_url(), "http://a:1")
+        self.assertEqual(pp.current_node_status(), "healthy")
         pp.release_task()
+        self.assertEqual(pp.current_proxy_url(), "")
 
-    def test_release_clears_scope(self):
-        pp.bind_task(scope_key="reg-9")
+    def test_rebind_noop_when_healthy(self):
+        pool = make_pool(sticky_scope="task")
+        pp.configure_proxy_pool(lambda: pool, lambda: ("sig",))
+        pp.bind_task("w1")
+        self.assertFalse(pp.rebind_if_unhealthy())
+        self.assertEqual(pp.current_raw_url(), "http://a:1")
+
+    def test_fallback_static_vs_pool(self):
+        static_pool = ProxyPool("static", ["http://cfg:1"], username="u", password="p")
+        pp.configure_proxy_pool(lambda: static_pool, None)
+        self.assertEqual(pp.fallback_proxy_url(), "http://u:p@cfg:1")
+        pp.configure_proxy_pool(lambda: make_pool(sticky_scope="task"), None)
+        self.assertEqual(pp.fallback_proxy_url(), "")
+
+    def test_config_error_falls_back_to_empty(self):
+        def broken():
+            raise ProxyConfigError("bad config")
+
+        pp.configure_proxy_pool(broken, lambda: ("sig",))
+        self.assertEqual(pp.pool_error(), "bad config")
+        self.assertEqual(pp.fallback_proxy_url(), "")
+        self.assertTrue(pp.get_pool().empty())
+
+    def test_describe_pool_shape(self):
+        pp.configure_proxy_pool(lambda: make_pool(sticky_scope="task"), None)
+        info = pp.describe_pool()
+        self.assertEqual(info["mode"], MODE_POOL)
+        self.assertEqual(info["count"], 3)
+        self.assertEqual(len(info["nodes"]), 3)
+        self.assertIn("key", info["nodes"][0])
+
+
+class ThreadScopeTests(unittest.TestCase):
+    def test_bindings_are_thread_local(self):
         pp.release_task()
-        self.assertEqual(pp.current_scope_key(), "")
+        pool = make_pool(sticky_scope="task")
+        pp.configure_proxy_pool(lambda: pool, lambda: ("sig",))
+        rendered = {}
+        lock = threading.Lock()
 
+        def worker(name):
+            value = pp.bind_task(name)
+            with lock:
+                rendered[name] = value
 
-class HealthManagementTests(unittest.TestCase):
-
-    def _pool(self, probe_results):
-        calls = []
-        def probe(url):
-            calls.append(url)
-            return probe_results[url]
-        pool = pp.ProxyPool(
-            pp.MODE_POOL,
-            ["p1", "p2"],
-            cooldown_seconds=60,
-            probe=probe,
-        )
-        return pool, calls
-
-    def test_probe_on_pick_fails_over_to_next_node(self):
-        pool, calls = self._pool({
-            "p1": {"ok": False, "error": "bad"},
-            "p2": {"ok": True, "egress_ip": "1.2.3.4", "latency_ms": 120},
-        })
-        picked = pool.resolve(scope_key="t")
-        self.assertEqual(picked, "p2")
-        nodes = {n["url"]: n for n in pool.node_list()}
-        self.assertEqual(nodes["p1"]["status"], pp.STATUS_UNREACHABLE)
-        self.assertEqual(nodes["p2"]["status"], pp.STATUS_HEALTHY)
-        self.assertEqual(nodes["p2"]["egress_ip"], "1.2.3.4")
-
-    def test_probe_all_fail_raises_exhausted(self):
-        pool, _ = self._pool({
-            "p1": {"ok": False, "error": "bad"},
-            "p2": {"ok": False, "error": "bad"},
-        })
-        with self.assertRaises(pp.ProxyPoolExhausted):
-            pool.resolve(scope_key="t")
-
-    def test_report_failure_puts_node_in_cooldown(self):
-        pool, _ = self._pool({"p1": {"ok": True}, "p2": {"ok": True}})
-        pool.report_failure("p1", reason="registration_risk")
-        picks = [pool.resolve(scope_key=f"t{i}") for i in range(3)]
-        self.assertTrue(all(pick == "p2" for pick in picks))
-        nodes = {n["url"]: n for n in pool.node_list()}
-        self.assertEqual(nodes["p1"]["status"], pp.STATUS_COOLDOWN)
-        self.assertGreater(nodes["p1"]["cooldown_remaining"], 0)
-
-    def test_cooldown_expires(self):
-        pool, _ = self._pool({"p1": {"ok": True}, "p2": {"ok": True}})
-        pool.report_failure("p1", reason="registration_risk")
-        with pool._lock:
-            pool._nodes["p1"].cooldown_until = time.time() - 1
-        picks = [pool.resolve(scope_key=f"t{i}") for i in range(4)]
-        self.assertIn("p1", picks)
-
-    def test_clear_cooldown(self):
-        pool, _ = self._pool({"p1": {"ok": True}, "p2": {"ok": True}})
-        pool.report_failure("p1", reason="registration_risk")
-        pool.clear_cooldown("p1")
-        nodes = {n["url"]: n for n in pool.node_list()}
-        self.assertEqual(nodes["p1"]["status"], pp.STATUS_HEALTHY)
-
-    def test_report_success_records_egress(self):
-        pool, _ = self._pool({"p1": {"ok": True}, "p2": {"ok": True}})
-        pool.report_success("p1", egress_ip="9.8.7.6", latency_ms=88)
-        nodes = {n["url"]: n for n in pool.node_list()}
-        self.assertEqual(nodes["p1"]["egress_ip"], "9.8.7.6")
-        self.assertEqual(nodes["p1"]["latency_ms"], 88)
-        self.assertEqual(nodes["p1"]["status"], pp.STATUS_HEALTHY)
-
-    def test_zero_cooldown_disables_cooling(self):
-        pool = pp.ProxyPool(pp.MODE_POOL, ["p1", "p2"], cooldown_seconds=0)
-        pool.report_failure("p1", reason="x")
-        nodes = {n["url"]: n for n in pool.node_list()}
-        self.assertNotEqual(nodes["p1"]["status"], pp.STATUS_COOLDOWN)
-
-
-class PoolManagementTests(unittest.TestCase):
-
-    def test_add_urls_dedupes_and_validates(self):
-        pool = pp.ProxyPool(pp.MODE_POOL, ["http://127.0.0.1:8001"])
-        result = pool.add_urls(["http://127.0.0.1:8002", "http://127.0.0.1:8001", "socks5://bad"])
-        self.assertEqual(result["added"], ["http://127.0.0.1:8002"])
-        self.assertEqual(result["invalid"], ["socks5://bad"])
-        self.assertEqual(len(pool.url_list()), 2)
-
-    def test_remove_url_clears_state_and_leases(self):
-        pool = pp.ProxyPool(pp.MODE_POOL, ["p1", "p2"])
-        pool.resolve(scope_key="a")
-        self.assertTrue(pool.remove_url("p1"))
-        self.assertNotIn("p1", pool.url_list())
-        self.assertNotIn("p1", [n["url"] for n in pool.node_list()])
-        self.assertFalse(pool.remove_url("p1"))
-
-
-class TemplatePoolTests(unittest.TestCase):
-    """池条目含 {account}/{email} 占位符：展开与状态键按模板。"""
-
-    def test_pool_template_expands_per_scope(self):
-        pool = pp.ProxyPool(pp.MODE_POOL, [
-            "http://poolA.{account}:tok@127.0.0.1:2260",
-        ])
-        self.assertEqual(
-            pool.resolve(scope_key="reg-7"),
-            "http://poolA.reg-7:tok@127.0.0.1:2260",
-        )
-        self.assertEqual(
-            pool.resolve_template(scope_key="reg-7"),
-            "http://poolA.{account}:tok@127.0.0.1:2260",
-        )
-
-    def test_pool_email_placeholder_uses_email(self):
-        pool = pp.ProxyPool(pp.MODE_POOL, ["http://pool.{email}:tok@h:2260"])
-        self.assertEqual(
-            pool.resolve(email="User.Name@x.com"),
-            "http://pool.username:tok@h:2260",
-        )
-
-    def test_pool_template_state_keyed_by_template(self):
-        pool = pp.ProxyPool(pp.MODE_POOL, [
-            "http://poolA.{account}:tok@127.0.0.1:2260",
-            "http://poolB.{account}:tok@127.0.0.1:2260",
-        ])
-        pool.report_failure("http://poolA.{account}:tok@127.0.0.1:2260", reason="risk")
-        picks = [pool.resolve(scope_key=f"t{i}") for i in range(4)]
-        self.assertTrue(all("poolB." in pick for pick in picks))
-
-
-
-
-class PersistSafetyTests(unittest.TestCase):
-    """锁内不得再做磁盘 IO：带 state_file + probe 的 pick 不能自死锁。"""
-
-    def test_resolve_with_state_file_and_probe_does_not_deadlock(self):
-        import tempfile, os
-        with tempfile.TemporaryDirectory() as tmp:
-            state_file = os.path.join(tmp, "state.json")
-            pool = pp.ProxyPool(
-                pp.MODE_POOL,
-                ["http://poolA.{account}:tok@127.0.0.1:2260"],
-                state_file=state_file,
-                probe=lambda url: {"ok": True, "egress_ip": "1.2.3.4", "latency_ms": 10},
-            )
-            url = pool.resolve(scope_key="reg-1")
-            self.assertIn("poolA.reg-1", url)
-            # 状态已落盘
-            with open(state_file, encoding="utf-8") as f:
-                data = json.load(f)
-            self.assertIn("http://poolA.{account}:tok@127.0.0.1:2260", data)
-            self.assertGreater(data["http://poolA.{account}:tok@127.0.0.1:2260"]["last_used_at"], 0)
-
-
+        threads = [threading.Thread(target=worker, args=(f"w{i}",)) for i in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(len(set(rendered.values())), 3)
+        self.assertEqual(pp.current_proxy_url(), "")
 
 
 if __name__ == "__main__":

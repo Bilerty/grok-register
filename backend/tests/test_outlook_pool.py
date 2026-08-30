@@ -25,6 +25,15 @@ class FakeSession:
         self.proxies = None
 
     def post(self, url, **kwargs):
+        if str(url).endswith("/api/accounts/batch-update-group"):
+            self.server.setdefault("post_calls", []).append(
+                {
+                    "url": url,
+                    "headers": dict(kwargs.get("headers") or {}),
+                    "json": kwargs.get("json"),
+                }
+            )
+            return FakeResponse({"success": True, "message": "已将 1 个账号移动到目标分组"})
         self.server["login_calls"] += 1
         self.server["login_payloads"].append(kwargs.get("json"))
         return FakeResponse({"success": True, "launch_url": "/extension-login/once"})
@@ -45,6 +54,28 @@ class FakeSession:
             return FakeResponse(
                 {"csrf_token": "csrf-value", "csrf_disabled": False},
                 headers={"set-cookie": "csrf_session=bound; Path=/"},
+            )
+        if url.endswith("/api/groups"):
+            self.server.setdefault("group_calls", []).append(
+                {"url": url, "headers": dict(kwargs.get("headers") or {})}
+            )
+            status_code = (
+                self.server["group_statuses"].pop(0)
+                if self.server.get("group_statuses")
+                else 200
+            )
+            if status_code != 200:
+                return FakeResponse({"success": False, "error": "请先登录"}, status_code=status_code)
+            return FakeResponse(
+                self.server.get("groups_payload")
+                or {
+                    "success": True,
+                    "groups": [
+                        {"id": 1, "name": "默认分组", "account_count": 12, "is_system": 0},
+                        {"id": 14, "name": "验证码超时", "account_count": 0, "is_system": 0},
+                        {"id": 2, "name": "临时邮箱", "account_count": 3, "is_system": 1},
+                    ],
+                }
             )
         raise AssertionError(url)
 
@@ -68,6 +99,7 @@ class OutlookEmailDisableTests(unittest.TestCase):
             "csrf_headers": [],
             "csrf_statuses": [],
             "put_calls": [],
+            "post_calls": [],
         }
 
     def session_factory(self):
@@ -80,7 +112,12 @@ class OutlookEmailDisableTests(unittest.TestCase):
                 {
                     "success": True,
                     "accounts": [
-                        {"id": 367, "email": "fixture@outlook.com", "status": "active"}
+                        {
+                            "id": 367,
+                            "email": "fixture@outlook.com",
+                            "status": "active",
+                            "group_id": 1,
+                        }
                     ],
                 }
             )
@@ -256,6 +293,166 @@ class OutlookEmailDisableTests(unittest.TestCase):
             session_cookie="session=initial",
         )
         self.assertTrue(result["success"])
+
+
+class OutlookEmailMoveGroupTests(unittest.TestCase):
+    def setUp(self):
+        outlook_pool.reset_runtime_state()
+        self.server = {
+            "login_calls": 0,
+            "login_payloads": [],
+            "csrf_headers": [],
+            "csrf_statuses": [],
+            "put_calls": [],
+            "post_calls": [],
+        }
+
+    def session_factory(self):
+        return FakeSession(self.server)
+
+    @staticmethod
+    def http_get(url, **kwargs):
+        if url.endswith("/api/external/accounts"):
+            return FakeResponse(
+                {
+                    "success": True,
+                    "accounts": [
+                        {
+                            "id": 367,
+                            "email": "fixture@outlook.com",
+                            "status": "active",
+                            "group_id": 1,
+                        }
+                    ],
+                }
+            )
+        raise AssertionError(url)
+
+    def test_move_posts_batch_update_group_without_changing_status(self):
+        result = outlook_pool.move_account_to_group(
+            self.http_get,
+            self.session_factory,
+            "http://mail-pool.test",
+            "fixture@outlook.com",
+            "14",
+            api_key="api-key",
+            group_id="1",
+            web_password="web-password",
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["account_id"], 367)
+        self.assertEqual(result["group_id"], 14)
+        self.assertFalse(result["already_moved"])
+        self.assertEqual(self.server["put_calls"], [])
+        self.assertEqual(len(self.server["post_calls"]), 1)
+        request = self.server["post_calls"][0]
+        self.assertTrue(request["url"].endswith("/api/accounts/batch-update-group"))
+        self.assertEqual(request["json"], {"account_ids": [367], "group_id": 14})
+        self.assertEqual(request["headers"]["X-CSRFToken"], "csrf-value")
+
+    def test_already_in_target_group_is_idempotent_without_login(self):
+        def grouped_get(url, **kwargs):
+            return FakeResponse(
+                {
+                    "success": True,
+                    "accounts": [
+                        {
+                            "id": 9,
+                            "email": "moved@outlook.com",
+                            "status": "active",
+                            "group_id": 14,
+                        }
+                    ],
+                }
+            )
+
+        result = outlook_pool.move_account_to_group(
+            grouped_get,
+            self.session_factory,
+            "http://mail-pool.test",
+            "moved@outlook.com",
+            14,
+            api_key="api-key",
+            group_id="14",
+        )
+        self.assertTrue(result["success"])
+        self.assertTrue(result["already_moved"])
+        self.assertEqual(result["group_id"], 14)
+        self.assertEqual(self.server["login_calls"], 0)
+        self.assertEqual(self.server["post_calls"], [])
+        self.assertEqual(self.server["put_calls"], [])
+
+    def test_invalid_target_group_id_is_rejected(self):
+        with self.assertRaisesRegex(Exception, "目标分组 ID 无效"):
+            outlook_pool.move_account_to_group(
+                self.http_get,
+                self.session_factory,
+                "http://mail-pool.test",
+                "fixture@outlook.com",
+                "abc",
+                api_key="api-key",
+            )
+
+
+class OutlookEmailGroupListTests(unittest.TestCase):
+    def setUp(self):
+        outlook_pool.reset_runtime_state()
+        self.server = {
+            "login_calls": 0,
+            "login_payloads": [],
+            "csrf_headers": [],
+            "csrf_statuses": [],
+            "put_calls": [],
+            "post_calls": [],
+            "group_calls": [],
+            "group_statuses": [],
+        }
+
+    def session_factory(self):
+        return FakeSession(self.server)
+
+    def test_list_groups_uses_web_session_and_keeps_names(self):
+        groups = outlook_pool.list_groups(
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should use web session")),
+            self.session_factory,
+            "http://mail-pool.test",
+            web_password="web-password",
+        )
+        self.assertEqual(
+            [(item["id"], item["name"], item["is_system"]) for item in groups],
+            [(1, "默认分组", False), (2, "临时邮箱", True), (14, "验证码超时", False)],
+        )
+        self.assertEqual(self.server["login_calls"], 1)
+        self.assertEqual(len(self.server["group_calls"]), 1)
+        self.assertTrue(self.server["group_calls"][0]["url"].endswith("/api/groups"))
+
+    def test_list_groups_falls_back_to_accounts_when_no_web_login(self):
+        def http_get(url, **kwargs):
+            if url.endswith("/api/external/accounts"):
+                return FakeResponse(
+                    {
+                        "success": True,
+                        "accounts": [
+                            {"id": 1, "email": "a@outlook.com", "group_id": 1, "group_name": "默认分组"},
+                            {"id": 2, "email": "b@outlook.com", "group_id": 1, "group_name": "默认分组"},
+                            {"id": 3, "email": "c@outlook.com", "group_id": 14, "group_name": "验证码超时"},
+                        ],
+                    }
+                )
+            raise AssertionError(url)
+
+        groups = outlook_pool.list_groups(
+            http_get,
+            self.session_factory,
+            "http://mail-pool.test",
+            api_key="api-key",
+        )
+        self.assertEqual(self.server["login_calls"], 0)
+        self.assertEqual(
+            [(item["id"], item["name"], item["account_count"]) for item in groups],
+            [(1, "默认分组", 2), (14, "验证码超时", 1)],
+        )
 
 
 class OutlookEmailCodeTimeTests(unittest.TestCase):

@@ -1,3 +1,4 @@
+import json
 import tempfile
 import time
 import unittest
@@ -223,6 +224,49 @@ class GrokIQOutboxTests(unittest.TestCase):
         )
 
         self.assertEqual(event["sso"], "")
+
+    def test_grokiq_result_matches_registration_id_then_email(self):
+        saved = self.store.save_grokiq_result(
+            {
+                "event_id": "registration:1:grok2api-imported",
+                "registration_id": str(self.registration_id),
+                "email": "other@example.com",
+                "degraded": True,
+                "verdict": "degraded",
+            }
+        )
+        self.assertIsNotNone(saved)
+        self.assertEqual(int(saved["id"]), self.registration_id)
+        extra = self.store.get_results_by_ids([self.registration_id])[0]
+        payload = extra["extra_json"]
+        stored = json.loads(payload)
+        self.assertTrue(stored["grokiq_result"]["degraded"])
+        self.assertEqual(stored["grokiq_result"]["verdict"], "degraded")
+        self.assertEqual(int(saved["bot_risk"] or 0), 1)
+
+        other_id = self.store.add_result(
+            {"email": "callback@example.com", "status": "success"}
+        )
+        matched = self.store.save_grokiq_result(
+            {
+                "registration_id": "not-a-number",
+                "email": "CALLBACK@example.com",
+                "degraded": False,
+                "verdict": "normal",
+            }
+        )
+        self.assertIsNotNone(matched)
+        self.assertEqual(int(matched["id"]), other_id)
+        self.assertEqual(int(matched["bot_risk"] or 0), 0)
+
+        missing = self.store.save_grokiq_result(
+            {
+                "registration_id": "",
+                "email": "missing@example.com",
+                "degraded": True,
+            }
+        )
+        self.assertIsNone(missing)
 
 
 if __name__ == "__main__":

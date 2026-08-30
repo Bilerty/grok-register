@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import quote
 
+from backend.integrations import proxy_pool as _pp
+
 
 def enqueue_relogin_grokiq_notification(
     store: Any,
@@ -173,6 +175,7 @@ class ReloginJobCoordinator:
 
         def runner() -> None:
             try:
+                _pp.bind_task(scope_key=f"relogin-{self._run_id}")
                 for record in runnable:
                     error = ""
                     account_id = int(record.get("id") or 0)
@@ -218,6 +221,7 @@ class ReloginJobCoordinator:
                         else:
                             self._success_count += 1
             finally:
+                _pp.release_task()
                 with self._lock:
                     for item in job_items:
                         if item["status"] == "pending":
@@ -337,7 +341,6 @@ class ReloginJobCoordinator:
             gr.load_config()
             gr._wire_runtime_modules()
             gr._bs.allow_browser_launches()
-            gr._pp.bind_task(scope_key=email, email=email)
             sso = login_with_password(email, password, timeout=100, log_callback=log)
 
             self._set(stage="保存账号文件")
@@ -535,10 +538,6 @@ class ReloginJobCoordinator:
             try:
                 stop_browser(force=True)
             except BaseException:
-                pass
-            try:
-                gr._pp.release_task()
-            except Exception:
                 pass
 
 

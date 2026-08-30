@@ -19,24 +19,26 @@ XAI_SIGNUP_CHECK_NAME = "xAI注册页"
 XAI_SIGNUP_URL = "https://accounts.x.ai/sign-up?redirect=grok-com"
 
 
-def _tcp_open(host: str, port: int, timeout: float = 5.0) -> bool:
-    """TCP 连通探测（AF_UNSPEC，IPv4/IPv6 代理主机均支持）。"""
+def _tcp_open(host: str, port: int, timeout: float = 2.0) -> bool:
+    s = socket.socket()
+    s.settimeout(timeout)
     try:
-        conn = socket.create_connection((host, port), timeout=timeout)
-    except OSError:
+        s.connect((host, port))
+        return True
+    except Exception:
         return False
-    try:
-        conn.close()
-    except OSError:
-        pass
-    return True
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
 
 
 def _trace_exit_ip(http_get: Callable, proxies: dict) -> str:
     """请求 Cloudflare trace 端点并解析出口 IP（失败返回空串）。"""
     resp = http_get(
         "https://www.cloudflare.com/cdn-cgi/trace",
-        timeout=15,
+        timeout=8,
         proxies=proxies,
     )
     text = str(getattr(resp, "text", "") or "")
@@ -365,8 +367,7 @@ def check_cpa(config: dict, http_get: Callable) -> CheckResult:
 
 def run_connectivity_checks(config: dict, http_get: Callable, http_post: Callable) -> List[CheckResult]:
     results = []
-    from backend.integrations import proxy_pool as _pp
-    proxy = resolve_proxy_url(_pp.current_proxy_url())
+    proxy = resolve_proxy_url(config.get("proxy", ""))
     results.append(check_proxy(proxy, http_get))
     results.append(check_xai_signup(proxy, http_get))
     results.append(

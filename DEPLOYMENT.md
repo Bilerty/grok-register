@@ -213,7 +213,7 @@ GrokIQ 后端只有 `expose: 8090`，没有映射宿主机端口；注册机通�
 
 新账号默认稳定等待由 `GROKIQ_REGISTER_PROBE_STABILIZATION_SECONDS=15` 控制，也可在 GrokIQ 页面修改；设为 `0` 时收到事件后立即创建首次探针。
 
-注册机只在 `grok_build` 导入成功后发送一次账号已导入事件。HTTP 未接收时由本地持久 Outbox 重试；收到 `2xx` 后结束投递，不查询后续探针或风险结果。
+注册机只在 `grok_build` 导入成功后发送一次账号已导入事件。HTTP 未接收时由本地持久 Outbox 重试；收到 `2xx` 后结束投递。GrokIQ 可再向 `/api/integrations/grokiq/notify` 发送检测回调通知，注册机只保存展示，不自动删号。
 
 ## 本机 Python 运行
 

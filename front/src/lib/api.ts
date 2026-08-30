@@ -1,31 +1,3 @@
-export type ProxyPoolNode = {
-  url: string;
-  url_display: string;
-  status: "healthy" | "unreachable" | "cooldown";
-  cooldown_remaining: number;
-  last_used_at: number;
-  egress_ip: string;
-  latency_ms: number | null;
-  last_error: string;
-  probe_at: number;
-};
-
-export type ProxyPoolResponse = {
-  ok: boolean;
-  pool: {
-    mode: string;
-    selection: string;
-    sticky_scope: string;
-    cooldown_seconds: number;
-    count: number;
-    healthy: number | null;
-  };
-  total: number;
-  page: number;
-  page_size: number;
-  items: ProxyPoolNode[];
-};
-
 export type JobStatus = {
   running: boolean;
   started_at?: number | null;
@@ -122,6 +94,20 @@ export type AccountRecord = {
     delivered_at: string;
     last_error: string;
   };
+  grokiq_result?: {
+    event_id?: string;
+    event_type?: string;
+    verdict?: string;
+    degraded?: boolean;
+    monitor_status?: string;
+    risk_score?: number;
+    risk_reasons?: string[];
+    isolated?: boolean;
+    probe_outcome?: string;
+    occurred_at?: string;
+    received_at?: string;
+    source?: string;
+  } | null;
   extra?: Record<string, unknown>;
   exit_ip?: string;
   exit_ip_at_start?: string;
@@ -135,6 +121,40 @@ export type FlaggedExitIp = {
   last_email: string;
   last_bot_flag_source: string;
   last_failure_reason: string;
+};
+
+export type ProxyPoolNodeStatus = "healthy" | "unreachable" | "cooldown" | "flagged";
+
+export type ProxyPoolNode = {
+  key: string;
+  url: string;
+  status: ProxyPoolNodeStatus;
+  cooldown_remaining: number;
+  last_used_at: number;
+  egress_ip: string;
+  latency_ms: number | null;
+  last_error: string;
+  probe_at: number;
+};
+
+export type ProxyPoolSummary = {
+  ok: boolean;
+  mode: "static" | "pool" | "sticky_template";
+  selection: string;
+  sticky_scope: string;
+  cooldown_seconds: number;
+  probe_once_per_batch: boolean;
+  count: number;
+  healthy: number;
+  error: string;
+  batch_probed: boolean;
+  nodes: ProxyPoolNode[];
+};
+
+export type ProxyPoolProbeStats = {
+  total: number;
+  healthy: number;
+  unreachable: number;
 };
 
 export type Stats = {
@@ -267,6 +287,13 @@ export type AuthArchiveDownload = {
 };
 
 export type AuthKind = "cpa" | "grok2api" | "sso";
+
+export type OutlookEmailGroup = {
+  id: number;
+  name: string;
+  account_count: number;
+  is_system: boolean;
+};
 
 export type ConfigFileSnapshot = {
   path: string;
@@ -476,6 +503,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ ip }),
     }),
+  outlookemailGroups: () =>
+    request<{ ok: boolean; groups: OutlookEmailGroup[] }>("/api/outlookemail/groups"),
   getConfig: () => request<{ ok: boolean; config: Record<string, any> }>("/api/config"),
   getConfigFile: () => request<{ ok: boolean; file: ConfigFileSnapshot }>("/api/config/file"),
   saveConfig: (config: Record<string, any>) =>
@@ -483,31 +512,6 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ config }),
     }),
-  proxyPool: (page = 1, pageSize = 20) =>
-    request<ProxyPoolResponse>(`/api/proxy-pool?page=${page}&page_size=${pageSize}`),
-  proxyPoolImport: (text: string) =>
-    request<{ ok: boolean; added: number; invalid: string[]; total: number }>("/api/proxy-pool/import", {
-      method: "POST",
-      body: JSON.stringify({ text }),
-    }),
-  proxyPoolProbe: () => request<{ ok: boolean; total: number; healthy: number; unreachable: number }>("/api/proxy-pool/probe", { method: "POST" }),
-  proxyPoolProbeNode: (url: string) =>
-    request<{ ok: boolean; result: { ok: boolean; egress_ip: string; latency_ms: number | null; error: string } }>(
-      "/api/proxy-pool/node/probe",
-      { method: "POST", body: JSON.stringify({ url }) }
-    ),
-  proxyPoolClearCooldown: (url: string) =>
-    request<{ ok: boolean }>("/api/proxy-pool/node/clear-cooldown", {
-      method: "POST",
-      body: JSON.stringify({ url }),
-    }),
-  proxyPoolRemoveNode: (url: string) =>
-    request<{ ok: boolean; total: number }>("/api/proxy-pool/node/remove", {
-      method: "POST",
-      body: JSON.stringify({ url }),
-    }),
-  proxyPoolClear: () =>
-    request<{ ok: boolean; removed: number }>("/api/proxy-pool/clear", { method: "POST" }),
   job: () => request<{ ok: boolean; job: JobStatus }>("/api/job"),
   logs: (afterId = 0, limit = 500) =>
     request<{ ok: boolean; logs: LogItem[]; job: JobStatus }>(
@@ -529,4 +533,29 @@ export const api = {
       "/api/connectivity",
       { method: "POST" }
     ),
+  proxyPool: () => request<ProxyPoolSummary>("/api/proxy-pool"),
+  importProxyPool: (lines: string[]) =>
+    request<{ ok: boolean; added: string[]; invalid: string[] }>("/api/proxy-pool/import", {
+      method: "POST",
+      body: JSON.stringify({ lines }),
+    }),
+  probeProxyPool: () =>
+    request<{ ok: boolean } & ProxyPoolProbeStats>("/api/proxy-pool/probe", { method: "POST" }),
+  probeProxyPoolNode: (key: string) =>
+    request<{
+      ok: boolean;
+      result: { ok: boolean; egress_ip: string; latency_ms: number | null; error: string };
+    }>("/api/proxy-pool/node/probe", { method: "POST", body: JSON.stringify({ key }) }),
+  clearProxyPoolCooldown: (key: string) =>
+    request<{ ok: boolean; changed: boolean }>("/api/proxy-pool/node/clear-cooldown", {
+      method: "POST",
+      body: JSON.stringify({ key }),
+    }),
+  removeProxyPoolNode: (key: string) =>
+    request<{ ok: boolean; removed: boolean; removed_url: string }>("/api/proxy-pool/node/remove", {
+      method: "POST",
+      body: JSON.stringify({ key }),
+    }),
+  clearProxyPool: () =>
+    request<{ ok: boolean; removed: number }>("/api/proxy-pool/clear", { method: "POST" }),
 };

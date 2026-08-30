@@ -76,6 +76,7 @@ class RegistrationRiskBotFlagTests(unittest.TestCase):
                 "cpa_auto_add": True,
                 "cpa_auth_dir": "data/cpa_auth",
                 "sso_detailed_risk_check": False,
+                "cpa_registration_risk_check": True,
             }
         )
         try:

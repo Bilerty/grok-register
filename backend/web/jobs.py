@@ -395,6 +395,11 @@ class RegistrationJobCoordinator:
         except Exception as exc:
             self._append_log(f"[!] 停止失败: {exc}")
             raise
+        try:
+            from backend.registration import engine as gr
+            gr._bs.interrupt_browser_work(log_callback=self._append_log)
+        except Exception as exc:
+            self._append_log(f"[!] 中断浏览器启动失败: {exc}")
         self._persist_snapshot(force=True)
         return self.status()
 

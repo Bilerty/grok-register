@@ -12,6 +12,7 @@ class RegistrationRiskTests(unittest.TestCase):
             {
                 "cpa_auto_add": True,
                 "sso_detailed_risk_check": False,
+                "cpa_registration_risk_check": True,
                 "cpa_auth_dir": "data/cpa_auth",
                 "cpa_remote_url": "",
                 "grok2api_auth_dir": "",
@@ -242,27 +243,27 @@ class RegistrationRiskTests(unittest.TestCase):
         detailed.assert_not_called()
         legacy.assert_not_called()
 
+    def test_registration_risk_check_is_skipped_by_default(self):
+        engine.config["cpa_registration_risk_check"] = False
+        with mock.patch.object(engine._s2cpa, "inspect_sso_account_state") as inspect:
+            self.assertEqual(engine.ensure_sso_oauth_eligible("fixture-sso"), {})
+        inspect.assert_not_called()
 
-class TransientMailErrorTests(unittest.TestCase):
-    """瞬时 TLS/网络错误识别：用于邮箱创建/验证码阶段自动重试。"""
-
-    def test_tls_and_timeout_markers_are_transient(self):
-        samples = [
-            "SSLError: Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library",
-            "curl: (28) Connection timed out",
-            "curl: (7) Failed to connect",
-            "Connection reset by peer",
-            "握手失败",
-        ]
-        for msg in samples:
-            self.assertTrue(engine.is_transient_mail_error(Exception(msg)), msg)
-
-    def test_business_errors_are_not_transient(self):
-        self.assertFalse(engine.is_transient_mail_error(engine.EmailDomainRejected("域名被拒绝")))
-        self.assertFalse(engine.is_transient_mail_error(engine.RegistrationRiskDenied("风控拒绝")))
-        self.assertFalse(engine.is_transient_mail_error(Exception("验证码错误")))
-
-
+    def test_registration_risk_check_can_be_enabled(self):
+        engine.config.update({"cpa_registration_risk_check": True})
+        clean = {
+            "found": True,
+            "bot_flag_source": 0,
+            "bot_flag_details": "",
+            "policy": "",
+            "denied": False,
+            "error": "",
+        }
+        with mock.patch.object(
+            engine._s2cpa, "inspect_sso_account_state", return_value=clean
+        ) as inspect:
+            self.assertIs(engine.ensure_sso_oauth_eligible("fixture-sso"), clean)
+        inspect.assert_called_once()
 
 
 if __name__ == "__main__":
