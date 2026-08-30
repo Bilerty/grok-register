@@ -112,6 +112,43 @@ function grokiqDeliveryLabel(status: string) {
   return labels[status] || status || "未加入队列";
 }
 
+function grokiqResultLabel(result?: AccountRecord["grokiq_result"] | null) {
+  if (!result) return "";
+  if (result.degraded) return "GrokIQ 降智";
+  const labels: Record<string, string> = {
+    degraded: "GrokIQ 降智",
+    quarantined: "GrokIQ 已隔离",
+    high_risk: "GrokIQ 高风险",
+    suspect: "GrokIQ 疑似",
+    insufficient_samples: "GrokIQ 样本不足",
+    probe_failed: "GrokIQ 探针失败",
+    imported: "GrokIQ 已导入",
+    normal: "GrokIQ 正常",
+  };
+  const verdict = String(result.verdict || "").trim();
+  return labels[verdict] || (verdict ? `GrokIQ ${verdict}` : "GrokIQ 已回传");
+}
+
+function grokiqDegraded(result?: AccountRecord["grokiq_result"] | null) {
+  return Boolean(result?.degraded);
+}
+
+function accountHasRisk(item: Pick<AccountRecord, "bot_risk" | "grokiq_result">) {
+  return Boolean(item.bot_risk) || grokiqDegraded(item.grokiq_result);
+}
+
+function grokiqResultVariant(result?: AccountRecord["grokiq_result"] | null) {
+  if (!result) return "secondary" as const;
+  if (result.degraded || result.verdict === "degraded" || result.verdict === "quarantined") {
+    return "destructive" as const;
+  }
+  if (result.verdict === "high_risk" || result.verdict === "probe_failed" || result.verdict === "suspect") {
+    return "warning" as const;
+  }
+  if (result.verdict === "normal") return "success" as const;
+  return "secondary" as const;
+}
+
 function compactBadgeVariant(status: string) {
   if (status === "success") return "success" as const;
   if (status === "failed" || status === "rejected") return "destructive" as const;
@@ -183,11 +220,11 @@ function emailDisableLabel(status: string) {
 type ReloginRecoveryKind = "sso_timeout" | "sso_token_exchange";
 
 function reloginRecoveryKind(
-  item: Pick<AccountRecord, "status" | "cpa_status" | "failure_type" | "failure_reason" | "bot_risk">,
+  item: Pick<AccountRecord, "status" | "cpa_status" | "failure_type" | "failure_reason" | "bot_risk" | "grokiq_result">,
 ): ReloginRecoveryKind | null {
   // 重登成功后的旧记录可能还保留历史 failure_type；CPA 已成功时不再重复提醒。
   // 风控结论已经明确时，重复重登只会形成 sso_timeout -> 风控 -> 再重登的循环。
-  if (item.bot_risk || item.status !== "failure" || item.cpa_status === "success") return null;
+  if (accountHasRisk(item) || item.status !== "failure" || item.cpa_status === "success") return null;
   if (item.failure_type === "sso_timeout") return "sso_timeout";
   if (
     item.failure_type === "cpa"
@@ -384,7 +421,7 @@ function AccountDetails({
     ["邮箱", detail.email],
     ["密码", showPassword ? detail.password : maskSecret(detail.password)],
     ["状态", detail.status],
-    ["风控标记", detail.bot_risk ? "是（该账号被打上机器人标记）" : "否"],
+    ["风控标记", accountHasRisk(detail) ? (grokiqDegraded(detail.grokiq_result) ? "是（GrokIQ 降智）" : "是（该账号被打上机器人标记）") : "否"],
     ["出口 IP", detail.exit_ip || "未记录"],
     ...(detail.exit_ip_at_start && detail.exit_ip_at_start !== (detail.exit_ip || "")
       ? ([["打开注册页时出口 IP", detail.exit_ip_at_start]] as Array<[string, string]>)
@@ -406,6 +443,11 @@ function AccountDetails({
     ["Webhook 尝试次数", String(detail.grokiq_delivery?.attempts || 0)],
     ["Webhook 接收时间", detail.grokiq_delivery?.delivered_at || ""],
     ["Webhook 最近错误", detail.grokiq_delivery?.last_error || ""],
+    ["GrokIQ 检测", grokiqResultLabel(detail.grokiq_result) || "未通知"],
+    ["GrokIQ 降智", detail.grokiq_result ? (detail.grokiq_result.degraded ? "是" : "否") : ""],
+    ["GrokIQ 判定", String(detail.grokiq_result?.verdict || "")],
+    ["GrokIQ 风险分", detail.grokiq_result?.risk_score != null ? String(detail.grokiq_result.risk_score) : ""],
+    ["GrokIQ 通知时间", String(detail.grokiq_result?.received_at || detail.grokiq_result?.occurred_at || "")],
     ["Auth 信息", detail.auth_info],
     ["邮箱池账号 ID", detail.email_account_id],
     ["邮箱停用状态", emailDisableLabel(detail.email_disable_status)],
@@ -420,12 +462,12 @@ function AccountDetails({
     <div className="space-y-4 text-sm">
       <div className="rounded-xl border border-sky-100 bg-sky-50/70 p-3">
         <div className="flex items-start gap-2">
-          <AccountEmailIcon botRisk={!!detail.bot_risk} className="mt-0.5" />
+          <AccountEmailIcon botRisk={accountHasRisk(detail)} className="mt-0.5" />
           <div className="break-all font-medium text-foreground">{detail.email || "未记录邮箱"}</div>
         </div>
         <div className="mt-2 flex flex-wrap gap-2">
           <Badge variant={statusVariant(detail.status)}>{detail.status || "unknown"}</Badge>
-          {detail.bot_risk ? (
+          {accountHasRisk(detail) ? (
             <Badge variant="warning">
               <ShieldAlert className="mr-1 h-3 w-3" aria-hidden="true" />
               风控标记
@@ -446,6 +488,11 @@ function AccountDetails({
           {detail.grokiq_delivery?.status && detail.grokiq_delivery.status !== "not_queued" ? (
             <Badge variant={cpaVariant(detail.grokiq_delivery.status === "delivered" ? "success" : "ready")}>
               Webhook {grokiqDeliveryLabel(detail.grokiq_delivery.status)}
+            </Badge>
+          ) : null}
+          {detail.grokiq_result ? (
+            <Badge variant={grokiqResultVariant(detail.grokiq_result)}>
+              {grokiqResultLabel(detail.grokiq_result)}
             </Badge>
           ) : null}
           <Badge variant={emailDisableVariant(detail.email_disable_status)}>
@@ -1398,8 +1445,20 @@ export function AccountsPage() {
                         </label>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-start gap-2">
-                            <AccountEmailIcon botRisk={!!item.bot_risk} className="mt-1" />
-                            <div className="break-all font-medium leading-6 text-foreground">{item.email || "-"}</div>
+                            <AccountEmailIcon botRisk={accountHasRisk(item)} className="mt-1" />
+                            <div className="min-w-0 flex-1">
+                              <div className="break-all font-medium leading-6 text-foreground">{item.email || "-"}</div>
+                              {item.grokiq_result ? (
+                                <div className="mt-1">
+                                  <Badge
+                                    variant={grokiqResultVariant(item.grokiq_result)}
+                                    className="min-h-5 rounded-md px-1.5 py-0 text-[10px] shadow-none"
+                                  >
+                                    {grokiqResultLabel(item.grokiq_result)}
+                                  </Badge>
+                                </div>
+                              ) : null}
+                            </div>
                           </div>
                           <div className="mt-2 space-y-2">
                             <MobileStatusGrid item={item} />
@@ -1491,19 +1550,29 @@ export function AccountsPage() {
                               <span
                                 className={cn(
                                   "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ring-1",
-                                  item.bot_risk
+                                  accountHasRisk(item)
                                     ? "bg-amber-50 text-amber-600 ring-amber-100"
                                     : "bg-sky-50 text-sky-600 ring-sky-100",
                                 )}
                               >
                                 <AccountEmailIcon
-                                  botRisk={!!item.bot_risk}
-                                  className={item.bot_risk ? "text-amber-600" : "text-sky-600"}
+                                  botRisk={accountHasRisk(item)}
+                                  className={accountHasRisk(item) ? "text-amber-600" : "text-sky-600"}
                                 />
                               </span>
                               <div className="min-w-0">
                                 <div className="truncate font-medium text-foreground" title={item.email}>{item.email || "-"}</div>
                                 <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{item.finished_at || "未记录时间"}</div>
+                                {item.grokiq_result ? (
+                                  <div className="mt-1">
+                                    <Badge
+                                      variant={grokiqResultVariant(item.grokiq_result)}
+                                      className="min-h-5 rounded-md px-1.5 py-0 text-[10px] shadow-none"
+                                    >
+                                      {grokiqResultLabel(item.grokiq_result)}
+                                    </Badge>
+                                  </div>
+                                ) : null}
                                 {reloginRecoveryKind(item) ? (
                                   <div className="mt-2">
                                     <ReloginRecoveryHint

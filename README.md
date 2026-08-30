@@ -2,7 +2,10 @@
 
 基于 FastAPI、React 和 Playwright 浏览器适配层的 Web 注册管理工具。Camoufox 保持默认，同时可切换到 CloakBrowser，支持注册任务、账号管理，以及 CPA / Grok2API 授权文件生成。
 
-[部署文档](DEPLOYMENT.md) · [Web 说明](WEB.md)
+[部署文档](DEPLOYMENT.md) · [Web 说明](WEB.md) · [GrokIQ 降智检测](https://github.com/kaibush/grok-iq)
+
+> **重要：上游 grok.com 已不再下发 `bfs` 标记。**
+> 注册机无法据此判断账号是否风控或降智。账号级降智检测和自动隔离必须使用 [GrokIQ](https://github.com/kaibush/grok-iq)：注册导入后由 GrokIQ 做质量探针、风险判定，并自动隔离异常账号。不要把本项目的 SSO / `botFlag` 检查当作风控结论。
 
 ## 界面预览
 
@@ -22,7 +25,8 @@
 - Camoufox（Firefox，默认）与 CloakBrowser（Chromium）双浏览器后端，共用注册流程、代理和异常进程清理
 - 支持 Cloudflare、DuckMail / Mail.tm、YYDS、MailNest、OutlookEmail、CloudMail
 - 注册完成后生成 CPA / Grok2API JSON
-- Grok Build 导入成功后可通过持久 Webhook 通知 GrokIQ
+- 上游已不再下发 `bfs`，本项目不能判断账号是否风控；必须联动 [GrokIQ](https://github.com/kaibush/grok-iq) 做账号级降智检测和自动隔离
+- Grok Build 导入成功后通过持久 Webhook 通知 GrokIQ，由 GrokIQ 自动探针并隔离异常账号
 - JSON 查看、复制和下载
 - 首次访问创建唯一管理员账号
 - Docker Compose 部署，支持无桌面 Linux 服务器
@@ -81,9 +85,11 @@ Docker 首次生成 `data/config.json` 时会预填该内部地址；已有配�
 
 OutlookEmail 数据保存在 `outlookemail-data/`，并已被 Git 和 Docker 构建上下文忽略。完整配置见 [DEPLOYMENT.md](DEPLOYMENT.md#可选-outlookemail-邮箱池)。
 
-## 与 GrokIQ 联动
+## 与 GrokIQ 联动（必须）
 
-本项目可与 [GrokIQ](https://github.com/kaibush/grok-iq) 统一编排。Grok Register 将账号成功导入 Grok2API 后，会通过持久 Webhook 通知 GrokIQ；GrokIQ 接收并去重账号事件，还可按设置自动执行首次质量探针。
+上游 grok.com 已经不下发 `bfs` 风控标记，**仅靠本注册机无法判断账号是否风控**。账号级降智检测和自动隔离必须交给 [GrokIQ](https://github.com/kaibush/grok-iq)。
+
+Grok Register 只负责注册并导入 Grok2API；导入成功后通过持久 Webhook 通知 GrokIQ。GrokIQ 接收并去重账号事件，按设置自动执行质量探针，识别降智 / 异常账号并自动隔离。没有 GrokIQ 时，新注册账号只能当作“尚未检测”，不能当作“未风控”。
 
 ```text
 Grok Register 注册并导入 Grok2API
@@ -92,7 +98,7 @@ Grok Register 注册并导入 Grok2API
                          │
                          ▼
               GrokIQ
-              接收账号 → 自动探针 → 风险与质量监控
+              接收账号 → 自动探针 → 降智检测与自动隔离
 ```
 
 复制环境变量模板，并至少为两端设置相同的联动 Token：
@@ -218,8 +224,11 @@ Windows 启动：
 | `proxy` | 注册和 OAuth 请求使用的 HTTP(S) 代理；支持 `http://host:port` 和 `http://user:password@host:port`，凭据中的特殊字符需使用 URL 百分号编码。注册风控会记录浏览器识别到的出口 IP；下次若仍是该 IP，会重启浏览器换出口后再注册。风控名单在「账号中心 → 出口 IP 风控」查看，单账号出口 IP 在「账号中心 → 账号管理 → 查看」详情中 |
 | `browser_engine` | 浏览器后端：`camoufox`（默认）或 `cloakbrowser` |
 | `browser_headless` | 本机无头模式；Docker 中强制关闭 |
+| `browser_low_traffic_mode` | 低流量注册模式，默认开启；复用静态资源缓存并跳过非注册必需资源 |
+| `browser_traffic_savings_level` | 低流量模式下的节省级别，默认 `more`（额外缓存 accounts.x.ai 哈希静态资源）；`standard` 仅缓存 grok.com CDN |
 | `cpa_auto_add` | 注册后生成 CPA 授权 |
-| `sso_detailed_risk_check` | 获取 SSO 后详细检查账号页；`botFlagSource=0` 正常，非 `0` 异常，缺失时自动重试 |
+| `sso_detailed_risk_check` | 获取 SSO 后尝试读取账号页 `botFlagSource`。上游已不再稳定下发 `bfs` / `botFlag`，该检查不能作为风控结论；账号级降智检测请用 GrokIQ |
+| `cpa_registration_risk_check` | 注册获取 SSO 后复查 grok.com `botFlag`；默认关闭。字段经常缺失，不能判断账号是否风控；必须使用 GrokIQ 做降智检测和自动隔离 |
 | `cpa_auth_dir` | CPA JSON 保存目录 |
 | `cpa_remote_url` | CPA Management API 地址 |
 | `cpa_management_key` | CPA 管理密钥 |
@@ -235,6 +244,8 @@ Windows 启动：
 | `grokiq_webhook_url` | GrokIQ `account-imported` 接口地址 |
 | `grokiq_webhook_token` | Webhook 请求头 `x-grokiq-token` |
 | `grokiq_webhook_timeout_seconds` | 单次投递超时；失败后由持久 Outbox 退避重试 |
+
+GrokIQ 检测完成后会发送回调通知 `POST /api/integrations/grokiq/notify`（请求头 `x-grokiq-token`，类似支付异步通知）。账号详情会显示是否降智，注册机不会据此自动删除账号。
 
 统一 Compose 中，`GROKIQ_REGISTER_PROBE_STABILIZATION_SECONDS` 控制 GrokIQ 收到新账号事件后等待多久再创建首次探针，默认 `15` 秒，设为 `0` 可关闭等待。
 
@@ -284,8 +295,8 @@ cd front && npm run build
 
 服务启动后会读取根目录 `VERSION`，立即查询一次 GitHub Releases，之后每
 1 小时复查。发现高于当前版本的正式 Release 时，管理控制台会自动弹出更新提示，
-展示版本号、更新说明和 Release 链接；关闭后同一版本不再重复弹出，更高版本
-发布后会重新提示。
+展示版本号、Markdown 更新说明和 Release 链接；关闭后同一版本不再重复弹出，更高版本
+发布后会重新提示。Release 正文按 GitHub Markdown 渲染，标题、列表、链接和代码块会显示在弹窗里。
 
 无需发布测试版本也可以预览弹窗：登录管理控制台后访问
 `/overview?preview-update=1`。预览关闭状态不会写入正式版本的忽略记录，刷新页面
@@ -302,6 +313,10 @@ docker compose up -d --force-recreate
 Release；标签版本同时注入镜像内的 `VERSION`。
 
 ## 常见问题
+
+### 注册完成后如何判断账号是否风控？
+
+不能靠本注册机判断。上游 grok.com 已不再下发 `bfs` 标记，SSO / `botFlag` 检查也无法给出可靠结论。必须接入 [GrokIQ](https://github.com/kaibush/grok-iq)，由它对账号做质量探针、降智检测和自动隔离。推荐使用 `compose.yaml` + `compose.grokiq.yaml` 一起启动。
 
 ### Docker 修改配置后未生效
 

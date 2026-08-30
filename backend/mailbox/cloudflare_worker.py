@@ -342,7 +342,7 @@ def wait_for_code(
     api_key: str = "",
     auth_mode: str = "none",
     custom_auth: str = "",
-    timeout: int = 180,
+    timeout: int = 60,
     poll_interval: int = 3,
     raise_if_cancelled: Callable[[Optional[Callable[[], bool]]], None],
     sleep_with_cancel: Callable[[float, Optional[Callable[[], bool]]], None],

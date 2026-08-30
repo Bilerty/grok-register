@@ -64,6 +64,27 @@ def normalize_source(source: str) -> str:
     return value if value in {"accounts", "temp"} else "accounts"
 
 
+def parse_group_id(raw: Any) -> Optional[int]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        value = int(text)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def same_group_id(left: Any, right: Any) -> bool:
+    parsed_left = parse_group_id(left)
+    parsed_right = parse_group_id(right)
+    if parsed_left is not None and parsed_right is not None:
+        return parsed_left == parsed_right
+    first = str(left or "").strip()
+    second = str(right or "").strip()
+    return bool(first) and first == second
+
+
 def api_headers(api_key: str) -> dict:
     key = str(api_key or "").strip()
     if not key:
@@ -261,50 +282,29 @@ def account_for_email(
     raise Exception(f"OutlookEmail 账号池中未找到邮箱: {email}")
 
 
-def disable_account(
-    http_get: HttpGet,
+def web_json_request(
     session_factory: SessionFactory,
     api_base: str,
-    email: str,
     *,
-    api_key: str = "",
-    group_id: str = "",
+    method: str,
+    path: str,
+    payload: dict,
     web_password: str = "",
     session_cookie: str = "",
     proxies: Optional[dict] = None,
+    missing_auth_error: str,
+    failure_label: str,
 ) -> dict:
-    """把 accounts 来源的邮箱状态更新为 inactive。
-
-    API Key 用于定位账号 ID；网页登录密码会自动换 Session Cookie，再自动获取
-    CSRF Token。Session Cookie 仅作为没有网页登录密码时的兼容回退。
-    """
+    """登录 OutlookEmail 管理页并发送带 CSRF 的 JSON 请求。"""
     base = normalize_base(api_base)
-    account = account_for_email(
-        http_get,
-        base,
-        api_key,
-        email,
-        group_id=group_id,
-    )
-    account_id = account.get("id")
-    try:
-        account_id = int(account_id)
-    except (TypeError, ValueError):
-        raise Exception(f"OutlookEmail 账号缺少有效 ID: {email}")
-    if str(account.get("status", "") or "").strip().lower() == "inactive":
-        return {
-            "success": True,
-            "account_id": account_id,
-            "already_inactive": True,
-            "message": "邮箱已处于停用状态",
-        }
-
     password = str(web_password or "")
     manual_cookie = str(session_cookie or "").strip()
     if not password and not manual_cookie:
-        raise Exception("OutlookEmail 自动停用需要配置 Web 登录密码")
+        raise Exception(missing_auth_error)
 
     last_error = ""
+    method_name = str(method or "post").strip().lower() or "post"
+    url = f"{base}{path}"
     for attempt in range(2):
         cookie = login_cookie(
             session_factory,
@@ -355,40 +355,193 @@ def disable_account(
             headers["Cookie"] = merge_cookie_headers(cookie, cookie_from_response(csrf_resp))
         if csrf_token:
             headers["X-CSRFToken"] = csrf_token
-        update_resp = session.put(
-            f"{base}/api/accounts/{account_id}",
+        request_fn = getattr(session, method_name, None)
+        if not callable(request_fn):
+            raise Exception(f"OutlookEmail 会话不支持 {method_name.upper()} 请求")
+        resp = request_fn(
+            url,
             headers=headers,
-            json={"status": "inactive"},
+            json=payload,
             timeout=15,
         )
-        if int(getattr(update_resp, "status_code", 0) or 0) in (401, 403):
+        if int(getattr(resp, "status_code", 0) or 0) in (401, 403):
             last_error = "Web Session 或 CSRF 校验失效"
             if password and attempt == 0:
                 continue
             raise Exception(f"OutlookEmail {last_error}")
-        if int(getattr(update_resp, "status_code", 0) or 0) >= 400:
+        if int(getattr(resp, "status_code", 0) or 0) >= 400:
             detail = response_error_detail(
-                update_resp,
-                url=f"{base}/api/accounts/{account_id}",
-                request_body={"status": "inactive"},
+                resp,
+                url=url,
+                request_body=payload,
             )
-            raise Exception(f"OutlookEmail 停用请求失败: {detail}")
-        data = update_resp.json()
+            raise Exception(f"OutlookEmail {failure_label}请求失败: {detail}")
+        data = resp.json()
         if not isinstance(data, dict) or not data.get("success"):
             error = data.get("error") if isinstance(data, dict) else ""
             message = data.get("message") if isinstance(data, dict) else ""
-            raise Exception(f"OutlookEmail 停用失败: {error or message or str(data)[:200]}")
-        with _state_lock:
-            current = dict(_reserved_accounts.get(str(email).strip().lower()) or account)
-            current["status"] = "inactive"
-            _reserved_accounts[str(email).strip().lower()] = current
+            raise Exception(
+                f"OutlookEmail {failure_label}失败: {error or message or str(data)[:200]}"
+            )
+        return data
+    raise Exception(f"OutlookEmail {failure_label}失败: {last_error or '未知错误'}")
+
+
+def _account_id_for_email(account: dict, email: str) -> int:
+    account_id = account.get("id")
+    try:
+        return int(account_id)
+    except (TypeError, ValueError):
+        raise Exception(f"OutlookEmail 账号缺少有效 ID: {email}")
+
+
+def disable_account(
+    http_get: HttpGet,
+    session_factory: SessionFactory,
+    api_base: str,
+    email: str,
+    *,
+    api_key: str = "",
+    group_id: str = "",
+    web_password: str = "",
+    session_cookie: str = "",
+    proxies: Optional[dict] = None,
+) -> dict:
+    """把 accounts 来源的邮箱状态更新为 inactive。
+
+    API Key 用于定位账号 ID；网页登录密码会自动换 Session Cookie，再自动获取
+    CSRF Token。Session Cookie 仅作为没有网页登录密码时的兼容回退。
+    """
+    base = normalize_base(api_base)
+    account = account_for_email(
+        http_get,
+        base,
+        api_key,
+        email,
+        group_id=group_id,
+    )
+    account_id = _account_id_for_email(account, email)
+    if str(account.get("status", "") or "").strip().lower() == "inactive":
         return {
             "success": True,
             "account_id": account_id,
-            "already_inactive": False,
-            "message": str(data.get("message") or "状态更新成功"),
+            "already_inactive": True,
+            "message": "邮箱已处于停用状态",
         }
-    raise Exception(f"OutlookEmail 停用失败: {last_error or '未知错误'}")
+
+    data = web_json_request(
+        session_factory,
+        base,
+        method="put",
+        path=f"/api/accounts/{account_id}",
+        payload={"status": "inactive"},
+        web_password=web_password,
+        session_cookie=session_cookie,
+        proxies=proxies,
+        missing_auth_error="OutlookEmail 自动停用需要配置 Web 登录密码",
+        failure_label="停用",
+    )
+    with _state_lock:
+        current = dict(_reserved_accounts.get(str(email).strip().lower()) or account)
+        current["status"] = "inactive"
+        _reserved_accounts[str(email).strip().lower()] = current
+    return {
+        "success": True,
+        "account_id": account_id,
+        "already_inactive": False,
+        "message": str(data.get("message") or "状态更新成功"),
+    }
+
+
+def move_account_to_group(
+    http_get: HttpGet,
+    session_factory: SessionFactory,
+    api_base: str,
+    email: str,
+    target_group_id: Any,
+    *,
+    api_key: str = "",
+    group_id: str = "",
+    web_password: str = "",
+    session_cookie: str = "",
+    proxies: Optional[dict] = None,
+) -> dict:
+    """把 accounts 来源的邮箱移到指定分组，不改 status。
+
+    OutlookEmail 的 PUT /api/accounts/{id} 只带 group_id 会走完整更新，
+    必须改走 POST /api/accounts/batch-update-group。
+    """
+    target = parse_group_id(target_group_id)
+    if target is None:
+        raise Exception("OutlookEmail 目标分组 ID 无效")
+    if not str(email or "").strip():
+        raise Exception("OutlookEmail 移动分组缺少邮箱地址")
+
+    base = normalize_base(api_base)
+    lookup_groups: list[str] = []
+    source = str(group_id or "").strip()
+    if source:
+        lookup_groups.append(source)
+    lookup_groups.append(str(target))
+    lookup_groups.append("")
+
+    account = None
+    last_error: Exception | None = None
+    seen: set[str] = set()
+    for lookup in lookup_groups:
+        if lookup in seen:
+            continue
+        seen.add(lookup)
+        try:
+            account = account_for_email(
+                http_get,
+                base,
+                api_key,
+                email,
+                group_id=lookup,
+            )
+            break
+        except Exception as exc:
+            last_error = exc
+            if "未找到邮箱" not in str(exc):
+                raise
+    if account is None:
+        raise last_error or Exception(f"OutlookEmail 账号池中未找到邮箱: {email}")
+
+    account_id = _account_id_for_email(account, email)
+    if same_group_id(account.get("group_id"), target):
+        return {
+            "success": True,
+            "account_id": account_id,
+            "group_id": target,
+            "already_moved": True,
+            "message": "邮箱已在目标分组",
+        }
+
+    payload = {"account_ids": [account_id], "group_id": target}
+    data = web_json_request(
+        session_factory,
+        base,
+        method="post",
+        path="/api/accounts/batch-update-group",
+        payload=payload,
+        web_password=web_password,
+        session_cookie=session_cookie,
+        proxies=proxies,
+        missing_auth_error="OutlookEmail 移动分组需要配置 Web 登录密码",
+        failure_label="移动分组",
+    )
+    with _state_lock:
+        current = dict(_reserved_accounts.get(str(email).strip().lower()) or account)
+        current["group_id"] = target
+        _reserved_accounts[str(email).strip().lower()] = current
+    return {
+        "success": True,
+        "account_id": account_id,
+        "group_id": target,
+        "already_moved": False,
+        "message": str(data.get("message") or "分组更新成功"),
+    }
 
 
 def session_headers(
@@ -493,6 +646,144 @@ def get_accounts(
     if not isinstance(accounts, list):
         raise Exception(f"OutlookEmail accounts 格式错误: {str(data)[:200]}")
     return [item for item in accounts if isinstance(item, dict)]
+
+
+def serialize_group(item: Any) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    group_id = parse_group_id(item.get("id") if item.get("id") is not None else item.get("group_id"))
+    if group_id is None:
+        return None
+    name = str(item.get("name") or item.get("group_name") or "").strip() or f"分组 {group_id}"
+    try:
+        account_count = int(item.get("account_count") or 0)
+    except (TypeError, ValueError):
+        account_count = 0
+    is_system = False
+    raw_system = item.get("is_system")
+    try:
+        is_system = bool(int(raw_system))
+    except (TypeError, ValueError):
+        is_system = bool(raw_system)
+    if name == "临时邮箱":
+        is_system = True
+    return {
+        "id": group_id,
+        "name": name,
+        "account_count": max(0, account_count),
+        "is_system": is_system,
+    }
+
+
+def _groups_from_accounts(
+    http_get: HttpGet,
+    api_base: str,
+    api_key: str,
+) -> List[dict]:
+    grouped: dict[int, dict] = {}
+    for item in get_accounts(http_get, api_base, api_key):
+        group_id = parse_group_id(item.get("group_id"))
+        if group_id is None:
+            continue
+        current = grouped.get(group_id)
+        if current is None:
+            serialized = serialize_group(
+                {
+                    "id": group_id,
+                    "name": item.get("group_name") or "",
+                    "account_count": 1,
+                    "is_system": 0,
+                }
+            )
+            if serialized:
+                grouped[group_id] = serialized
+            continue
+        current["account_count"] = int(current.get("account_count") or 0) + 1
+    return [grouped[key] for key in sorted(grouped)]
+
+
+def list_groups(
+    http_get: HttpGet,
+    session_factory: SessionFactory,
+    api_base: str,
+    *,
+    api_key: str = "",
+    web_password: str = "",
+    session_cookie: str = "",
+    proxies: Optional[dict] = None,
+) -> List[dict]:
+    """读取 OutlookEmail 分组，优先走管理页 /api/groups，便于包含空分组。"""
+    password = str(web_password or "")
+    manual_cookie = str(session_cookie or "").strip()
+    if password or manual_cookie:
+        return _list_groups_via_web(
+            session_factory,
+            api_base,
+            web_password=password,
+            session_cookie=manual_cookie,
+            proxies=proxies,
+        )
+    if str(api_key or "").strip():
+        return _groups_from_accounts(http_get, api_base, api_key)
+    raise Exception("OutlookEmail 获取分组需要配置网页登录密码或 API Key")
+
+
+def _list_groups_via_web(
+    session_factory: SessionFactory,
+    api_base: str,
+    *,
+    web_password: str = "",
+    session_cookie: str = "",
+    proxies: Optional[dict] = None,
+) -> List[dict]:
+    base = normalize_base(api_base)
+    password = str(web_password or "")
+    manual_cookie = str(session_cookie or "").strip()
+    last_error = ""
+    for attempt in range(2):
+        cookie = login_cookie(
+            session_factory,
+            base,
+            password,
+            proxies=proxies,
+            force_refresh=attempt > 0,
+        ) if password else manual_cookie
+        if not cookie:
+            raise Exception("OutlookEmail 未获取到 Web Session Cookie")
+        session = session_factory()
+        if proxies:
+            try:
+                session.proxies = proxies
+            except Exception:
+                pass
+        cookie_in_jar = seed_session_cookie(session, cookie, base)
+        headers = {"Accept": "application/json"}
+        if not cookie_in_jar:
+            headers["Cookie"] = cookie
+        resp = session.get(f"{base}/api/groups", headers=headers, timeout=15)
+        status = int(getattr(resp, "status_code", 0) or 0)
+        if status in (401, 403):
+            last_error = "Web Session 已失效"
+            if password and attempt == 0:
+                continue
+            raise Exception(f"OutlookEmail {last_error}")
+        if status >= 400:
+            raise Exception(response_error_detail(resp, url=f"{base}/api/groups"))
+        data = resp.json()
+        if not isinstance(data, dict) or not data.get("success"):
+            error = data.get("error") if isinstance(data, dict) else ""
+            raise Exception(f"OutlookEmail 获取分组失败: {error or str(data)[:200]}")
+        raw_groups = data.get("groups")
+        if not isinstance(raw_groups, list):
+            raise Exception(f"OutlookEmail 分组列表格式错误: {str(data)[:200]}")
+        groups = []
+        for item in raw_groups:
+            serialized = serialize_group(item)
+            if serialized:
+                groups.append(serialized)
+        groups.sort(key=lambda item: int(item.get("id") or 0))
+        return groups
+    raise Exception(f"OutlookEmail 获取分组失败: {last_error or '未知错误'}")
 
 
 def get_temp_emails(
@@ -773,7 +1064,7 @@ def wait_for_code(
     folder: str = "all",
     top: int = 10,
     proxies: Optional[dict] = None,
-    timeout: int = 180,
+    timeout: int = 60,
     poll_interval: int = 3,
     raise_if_cancelled: Callable[[Optional[Callable[[], bool]]], None],
     sleep_with_cancel: Callable[[float, Optional[Callable[[], bool]]], None],

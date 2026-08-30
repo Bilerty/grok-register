@@ -105,11 +105,11 @@ export default function App() {
         <Route path="registration/runtime" element={<RegisterPage view="runtime" />} />
         <Route path="register" element={<Navigate to="/registration/new" replace />} />
         <Route path="settings/registration" element={<SettingsPage section="registration" />} />
-        {/* TokenAuth：统一管理 SSO 授权转换与下游上传目标 */}
-        <Route path="settings/tokenauth" element={<SettingsPage section="tokenauth" />} />
+        {/* TokenAuth 已并入注册设置，保留旧地址并默认打开授权转换 Tab */}
+        <Route path="settings/tokenauth" element={<Navigate to="/settings/registration?tab=tokenauth" replace />} />
         {/* 旧路由保留重定向，避免书签/外链 404 */}
-        <Route path="settings/cpa" element={<Navigate to="/settings/tokenauth" replace />} />
-        <Route path="settings/grok2api" element={<Navigate to="/settings/tokenauth" replace />} />
+        <Route path="settings/cpa" element={<Navigate to="/settings/registration?tab=tokenauth" replace />} />
+        <Route path="settings/grok2api" element={<Navigate to="/settings/registration?tab=tokenauth" replace />} />
         <Route path="settings/mail" element={<SettingsPage section="mail" />} />
         <Route path="settings/outlook" element={<SettingsPage section="outlook" />} />
         <Route path="settings/proxy-pool" element={<ProxyPoolPage />} />

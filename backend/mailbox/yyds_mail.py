@@ -161,7 +161,7 @@ def wait_for_code(
     token: str,
     address: str,
     *,
-    timeout: int = 180,
+    timeout: int = 60,
     poll_interval: int = 3,
     jwt: str = "",
     raise_if_cancelled: Callable[[Optional[Callable[[], bool]]], None],

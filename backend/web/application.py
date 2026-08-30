@@ -63,6 +63,7 @@ CONFIG_PUBLIC_KEYS = (
     "outlookemail_api_key",
     "outlookemail_source",
     "outlookemail_group_id",
+    "outlookemail_code_timeout_group_id",
     "outlookemail_web_password",
     "outlookemail_session_cookie",
     "outlookemail_temp_tag_ids",
@@ -84,6 +85,7 @@ CONFIG_PUBLIC_KEYS = (
     "browser_headless",
     "browser_locale",
     "browser_low_traffic_mode",
+    "browser_traffic_savings_level",
     "close_browser_on_stop",
     "log_level",
     "register_count",
@@ -91,6 +93,7 @@ CONFIG_PUBLIC_KEYS = (
     "user_agent",
     "cpa_auto_add",
     "sso_detailed_risk_check",
+    "cpa_registration_risk_check",
     "cpa_token_mode",
     "cpa_auth_dir",
     "cpa_remote_url",
@@ -288,6 +291,7 @@ def _auth_required_path(path: str) -> bool:
         "/api/auth/setup",
         "/api/auth/me",
         "/api/auth/logout",
+        "/api/integrations/grokiq/notify",
     }
 
 
@@ -372,6 +376,7 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
             "close_browser_on_stop",
             "cpa_auto_add",
             "sso_detailed_risk_check",
+            "cpa_registration_risk_check",
             "grok2api_auto_import",
             "grok2api_same_proxy",
             "grok2api_auto_import_build",
@@ -420,6 +425,10 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
             value = str(value or "camoufox").strip().lower()
             if value not in {"camoufox", "cloakbrowser"}:
                 value = "camoufox"
+        elif key == "browser_traffic_savings_level":
+            value = str(value or "more").strip().lower()
+            if value not in {"standard", "more", "max"}:
+                value = "more"
         elif key == "email_provider":
             value = str(value or "cloudflare").strip().lower() or "cloudflare"
             if value not in {"cloudflare", "duckmail", "yyds", "mailnest", "outlookemail", "cloudmail"}:
@@ -542,6 +551,10 @@ def _serialize_record(
     item["exit_ip_at_start"] = str(extra_data.get("exit_ip_at_start") or "").strip()
     risk_check = extra_data.get("sso_risk_check")
     item["sso_risk_check"] = risk_check if isinstance(risk_check, dict) else None
+    grokiq_result = extra_data.get("grokiq_result")
+    item["grokiq_result"] = grokiq_result if isinstance(grokiq_result, dict) else None
+    if isinstance(item["grokiq_result"], dict) and item["grokiq_result"].get("degraded"):
+        item["bot_risk"] = True
     item["exception_traceback"] = str(extra_data.get("exception_traceback") or "")
     item["exception_type"] = str(extra_data.get("exception_type") or "")
     item["has_exception_traceback"] = bool(item["exception_traceback"])
@@ -832,6 +845,7 @@ def create_app() -> FastAPI:
             repository = gr.get_registration_repository()
             gr.backfill_access_token_bot_risk()
             gr.backfill_registration_risk_bot_risk()
+            gr.backfill_grokiq_degraded_bot_risk()
             grokiq.grokiq_notifier.start(
                 repository,
                 lambda: dict(gr.config),
@@ -848,6 +862,28 @@ def create_app() -> FastAPI:
     @app.get("/api/health")
     def api_health() -> Dict[str, Any]:
         return {"ok": True, "service": "grok-register-web", "version": app_version}
+
+    @app.post("/api/integrations/grokiq/notify")
+    async def api_grokiq_notify(request: Request) -> Dict[str, Any]:
+        expected = str(_gr().config.get("grokiq_webhook_token") or "").strip()
+        if not expected:
+            raise HTTPException(status_code=503, detail="GrokIQ 联动 Token 尚未配置")
+        supplied = str(request.headers.get("x-grokiq-token") or "").strip()
+        if not hmac.compare_digest(supplied, expected):
+            raise HTTPException(status_code=401, detail="联动令牌无效")
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="请求体必须是 JSON") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="请求体必须是对象")
+        email = str(payload.get("email") or "").strip()
+        if not email or "@" not in email:
+            raise HTTPException(status_code=400, detail="邮箱无效")
+        stored = _gr().get_registration_repository().save_grokiq_result(payload)
+        if stored is None:
+            raise HTTPException(status_code=404, detail="未找到对应注册记录")
+        return {"ok": True, "account_id": int(stored.get("id") or 0)}
 
     @app.get("/api/system/version")
     def api_system_version() -> Dict[str, Any]:
@@ -1456,6 +1492,16 @@ def create_app() -> FastAPI:
         gr = _gr()
         gr.load_config()
         return {"ok": True, "config": _public_config(gr.config)}
+
+    @app.get("/api/outlookemail/groups")
+    def api_outlookemail_groups() -> Dict[str, Any]:
+        gr = _gr()
+        gr.load_config()
+        try:
+            groups = gr.list_outlookemail_groups()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "groups": groups}
 
     @app.get("/api/config/file")
     def api_config_file_get() -> Dict[str, Any]:

@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { ArrowUpRight, RefreshCw, Sparkles, X } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { useLocation } from "react-router-dom";
 
 import { Badge, Button, buttonVariants } from "@/components/ui";
@@ -35,10 +37,77 @@ function previewVersion(currentVersion = "v1.0.0"): VersionInfo {
     status: "update_available",
     checkedAt: new Date().toISOString(),
     releaseUrl: "https://github.com/kaibush/grok-register/releases",
-    releaseNotes:
-      "这是版本更新弹窗的预览效果。实际发现新版本时，这里会显示对应 Release Notes。",
+    releaseNotes: [
+      "## 更新内容",
+      "",
+      "- 账号中心新增 **出口 IP 风控** 页面，可查看和删除风控名单",
+      "- 账号详情显示该次注册的出口 IP",
+      "- Grok2API 自动导入支持分别选择 `grok_build` / `grok_web` / `grok_console`",
+      "",
+      "完整说明见 [Release 页面](https://github.com/kaibush/grok-register/releases)。",
+    ].join("\n"),
     error: "",
   };
+}
+
+
+function markdownLink({ href, children }: { href?: string; children?: ReactNode }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="font-medium text-sky-700 underline decoration-sky-200 underline-offset-2 hover:text-sky-800"
+    >
+      {children}
+    </a>
+  );
+}
+
+function ReleaseNotesMarkdown({ markdown }: { markdown: string }) {
+  return (
+    <div className="max-h-[min(22rem,50vh)] overflow-y-auto break-words rounded-xl bg-slate-50 px-4 py-3 text-xs leading-6 text-slate-600">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          h1: ({ children }) => <h3 className="mb-2 text-sm font-semibold text-slate-900">{children}</h3>,
+          h2: ({ children }) => <h3 className="mb-2 text-sm font-semibold text-slate-900">{children}</h3>,
+          h3: ({ children }) => <h4 className="mb-1.5 text-xs font-semibold text-slate-800">{children}</h4>,
+          p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+          ul: ({ children }) => <ul className="mb-2 list-disc space-y-1 pl-4 last:mb-0">{children}</ul>,
+          ol: ({ children }) => <ol className="mb-2 list-decimal space-y-1 pl-4 last:mb-0">{children}</ol>,
+          li: ({ children }) => <li className="break-words">{children}</li>,
+          strong: ({ children }) => <strong className="font-semibold text-slate-800">{children}</strong>,
+          em: ({ children }) => <em className="italic">{children}</em>,
+          hr: () => <hr className="my-3 border-slate-200" />,
+          blockquote: ({ children }) => (
+            <blockquote className="mb-2 border-l-2 border-slate-300 pl-3 text-slate-500 last:mb-0">{children}</blockquote>
+          ),
+          a: markdownLink,
+          code: ({ className, children }) => (
+            className ? (
+              <code className="font-mono text-[11px] text-slate-800">{children}</code>
+            ) : (
+              <code className="rounded bg-white px-1 py-0.5 font-mono text-[11px] text-slate-800 ring-1 ring-slate-200">{children}</code>
+            )
+          ),
+          pre: ({ children }) => (
+            <pre className="mb-2 overflow-x-auto rounded-lg bg-white px-3 py-2 ring-1 ring-slate-200 last:mb-0">{children}</pre>
+          ),
+          table: ({ children }) => (
+            <div className="mb-2 overflow-x-auto last:mb-0">
+              <table className="w-full border-collapse text-left">{children}</table>
+            </div>
+          ),
+          th: ({ children }) => <th className="border-b border-slate-200 px-2 py-1 font-semibold text-slate-800">{children}</th>,
+          td: ({ children }) => <td className="border-b border-slate-100 px-2 py-1">{children}</td>,
+          img: ({ alt }) => <span className="italic text-slate-400">[{alt || "图片"}]</span>,
+        }}
+      >
+        {markdown}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 export function UpdateNotice() {
@@ -142,7 +211,7 @@ export function UpdateNotice() {
         aria-modal="true"
         aria-labelledby="update-notice-title"
         aria-describedby="update-notice-description"
-        className="w-full overflow-hidden rounded-t-3xl bg-white shadow-2xl sm:max-w-lg sm:rounded-3xl"
+        className="w-full overflow-hidden rounded-t-3xl bg-white shadow-2xl sm:max-w-xl sm:rounded-3xl"
       >
         <div className="mx-auto mt-2 h-1.5 w-12 rounded-full bg-slate-300 sm:hidden" />
         <header className="flex items-start justify-between gap-4 border-b border-slate-100 px-5 py-5 sm:px-6">
@@ -178,9 +247,7 @@ export function UpdateNotice() {
           </div>
 
           {version.releaseNotes ? (
-            <div className="max-h-52 overflow-y-auto whitespace-pre-wrap break-words rounded-xl bg-slate-50 px-4 py-3 text-xs leading-6 text-slate-600">
-              {version.releaseNotes}
-            </div>
+            <ReleaseNotesMarkdown markdown={version.releaseNotes} />
           ) : (
             <div className="rounded-xl bg-slate-50 px-4 py-3 text-xs leading-6 text-slate-500">
               发布页中提供本次版本的更新信息。

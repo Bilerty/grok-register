@@ -1,3 +1,4 @@
+import inspect
 import unittest
 
 from backend.mailbox import yyds_mail
@@ -51,6 +52,10 @@ class YydsMailTests(unittest.TestCase):
         )
 
         self.assertEqual(code, "134-771")
+
+    def test_wait_for_code_default_timeout_is_60_seconds(self):
+        default = inspect.signature(yyds_mail.wait_for_code).parameters["timeout"].default
+        self.assertEqual(default, 60)
 
 
 if __name__ == "__main__":
