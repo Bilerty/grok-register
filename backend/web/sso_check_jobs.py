@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from backend.integrations import proxy_pool as _pp
 from backend.web.account_exports import read_sso_token
 
 
@@ -235,6 +236,7 @@ class SsoCheckJobCoordinator:
 
         def runner() -> None:
             try:
+                _pp.bind_task(scope_key=f"sso-{self._run_id}")
                 for record in runnable:
                     account_id = int(record.get("id") or 0)
                     email = str(record.get("email") or "").strip()
@@ -262,6 +264,7 @@ class SsoCheckJobCoordinator:
                         else:
                             self._failed_count += 1
             finally:
+                _pp.release_task()
                 with self._lock:
                     for item in seed_items:
                         if item["status"] == "pending":

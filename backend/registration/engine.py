@@ -44,6 +44,7 @@ from backend.mailbox.utilities import pick_list_payload as _pick_list
 from backend.automation import session as _bs
 from backend.registration import signup_flow as _rf
 from backend.integrations import network_checks as _conn
+from backend.integrations import proxy_pool as _pp
 from backend.registration.store import RegistrationRepository
 from backend.integrations.proxy import redact_proxy_text, redact_proxy_url, resolve_proxy_url
 from backend.shared.paths import DATA_ROOT, PROJECT_ROOT
@@ -327,6 +328,14 @@ DEFAULT_CONFIG = {
     "outlookemail_pick_mode": "random",
     "outlookemail_disable_after_cpa_success": False,
     "proxy": "http://127.0.0.1:7890",
+    "proxy_mode": "",
+    "proxy_selection": "round_robin",
+    "proxy_sticky_scope": "task",
+    "proxy_file": "",
+    "proxy_username": "",
+    "proxy_password": "",
+    "proxy_cooldown_seconds": 600,
+    "proxy_probe_once_per_batch": True,
     "enable_nsfw": True,
     "debug_mode": False,
     "browser_engine": _bs.normalize_browser_engine(
@@ -502,6 +511,13 @@ def mark_registration_risk(cpa_detail, exc, *, email="", log_callback=None) -> N
             f" botFlagSource={getattr(exc, 'bot_flag_source', None)!r}"
         )
     remember_registration_risk_exit_ip(exc, email=email, log_callback=log_callback)
+    # 池节点联动：注册风控 → 当前节点进入冷却，后续任务换节点
+    try:
+        raw = _pp.current_raw_url()
+        if raw:
+            _pp.get_pool().report_failure(raw, reason=redact_proxy_text(exc) or "registration_risk")
+    except Exception:
+        pass
 
 
 def apply_risk_bot_flag(cpa_detail: dict, exc) -> bool:
@@ -804,6 +820,14 @@ def persist_registration_result(
                 "extra": extra_data,
             }
         )
+        if status == "success":
+            # 池节点联动：注册成功 → 记录节点出口 IP 并保持健康
+            try:
+                raw = _pp.current_raw_url()
+                if raw:
+                    _pp.get_pool().report_success(raw, egress_ip=_exit_ip.current_exit_ip())
+            except Exception:
+                pass
         if _grokiq.grok_build_import_succeeded(
             detail.get("grok2api_remote_result")
         ):
@@ -877,9 +901,104 @@ def save_config():
             json.dump(config, f, indent=4, ensure_ascii=False)
     except Exception as e:
         print(f"保存配置失败: {e}")
+    _pp.reload_proxy_pool()
 
 
 load_config()
+
+
+# ---------------------------------------------------------------------------
+# 代理池（fork 定制）：构建 / 探测 / 与上游风控出口 IP 名单联动
+# ---------------------------------------------------------------------------
+
+POOL_CONFIG_KEYS = (
+    "proxy",
+    "proxy_mode",
+    "proxy_selection",
+    "proxy_sticky_scope",
+    "proxy_file",
+    "proxy_username",
+    "proxy_password",
+    "proxy_cooldown_seconds",
+    "proxy_probe_once_per_batch",
+)
+
+
+def _pool_config_signature():
+    return tuple(str(config.get(key, "")) for key in POOL_CONFIG_KEYS)
+
+
+def _pool_probe_node(proxy_url):
+    """池节点探测：Docker host 别名解析 + 网络检查，返回池需要的结构。"""
+    resolved = resolve_proxy_url(proxy_url)
+    started = time.monotonic()
+    try:
+        _name, ok, detail = _conn.check_proxy(resolved, http_get)
+    except Exception as exc:
+        return {"ok": False, "egress_ip": "", "latency_ms": None, "error": redact_proxy_text(exc)}
+    latency_ms = int((time.monotonic() - started) * 1000)
+    if not ok:
+        return {
+            "ok": False,
+            "egress_ip": "",
+            "latency_ms": latency_ms,
+            "error": redact_proxy_text(detail),
+        }
+    match = re.search(r"出口IP\s+([0-9A-Fa-f:.]+)", str(detail or ""))
+    return {
+        "ok": True,
+        "egress_ip": match.group(1) if match else "",
+        "latency_ms": latency_ms,
+        "error": "",
+    }
+
+
+def _pool_ip_flagged(ip):
+    """节点探测出口 IP 是否命中上游风控出口名单（命中则池内隔离）。"""
+    try:
+        return bool(get_registration_repository().is_flagged_exit_ip(ip))
+    except Exception:
+        return False
+
+
+def _build_proxy_pool_from_config():
+    def file_read(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    return _pp.build_pool_from_config(
+        lambda key, default=None: config.get(key, default),
+        file_read=file_read,
+        state_file=str(DATA_ROOT / "proxy_pool_state.json"),
+        probe=_pool_probe_node,
+        ip_flagged=_pool_ip_flagged,
+    )
+
+
+def _configure_proxy_pool():
+    _pp.configure_proxy_pool(
+        _build_proxy_pool_from_config,
+        config_signature=_pool_config_signature,
+    )
+
+
+def _preflight_proxy_pool():
+    """批次开始前统一探测池节点，避免注册过程中逐节点探测拖慢任务。"""
+    pool = _pp.get_pool()
+    if pool.mode != _pp.MODE_POOL or pool.empty():
+        return
+    registration_log("[*] 预探测代理池节点…")
+    try:
+        stats = pool.probe_all()
+        pool.mark_batch_probed()
+        registration_log(
+            f"[*] 代理池预探测完成：健康 {stats['healthy']}/{stats['total']}"
+        )
+    except Exception as exc:
+        registration_log(f"[!] 代理池预探测失败，按节点状态继续: {exc}")
+
+
+_configure_proxy_pool()
 
 # turnstilePatch 是 Chrome 扩展，Camoufox 基于 Firefox 不兼容，已移除。
 # Turnstile 交互由 signup_flow.getTurnstileToken 统一处理。
@@ -890,7 +1009,14 @@ DUCKMAIL_API_BASE_DEFAULT = duckmail_provider.API_BASE_DEFAULT
 
 
 def get_proxies():
-    proxy = resolve_proxy_url(config.get("proxy", ""))
+    # 浏览器与 HTTP 客户端的统一出口：任务线程内优先使用池绑定节点，
+    # 未绑定时回退到配置代理（pool 模式不回退多行池文本，由任务绑定负责）。
+    proxy = (
+        _pp.current_proxy_url()
+        or _pp.fallback_proxy_url()
+        or str(config.get("proxy", "") or "")
+    )
+    proxy = resolve_proxy_url(proxy)
     if proxy:
         return {"http": proxy, "https": proxy}
     return {}
@@ -1414,8 +1540,12 @@ def _normalize_sso_token(raw_token):
 
 
 def _resolve_cpa_proxy():
-    """CPA 换 token 用的代理：优先 config.proxy，其次环境变量，否则直连。"""
-    proxy = resolve_proxy_url(config.get("proxy", ""))
+    """CPA 换 token 用的代理：任务绑定出口 > config.proxy > 环境变量，否则直连。"""
+    proxy = resolve_proxy_url(
+        _pp.current_proxy_url()
+        or _pp.fallback_proxy_url()
+        or str(config.get("proxy", "") or "")
+    )
     if proxy:
         return proxy
     for key in ("https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY"):
@@ -3007,6 +3137,7 @@ def run_registration(count):
     accounts_output_file = ""  # 已改为按邮箱单独保存，不再使用批量文件
     workers = max(1, min(int(config.get("register_workers", 1) or 1), 8, int(count or 1)))
     registration_log(f"[*] Web 任务启动，目标数量: {count} | 并发: {workers}")
+    _preflight_proxy_pool()
     _interval_raw = str(config.get("account_interval", "0") or "0").strip()
     if _interval_raw and _interval_raw != "0":
         registration_log(f"[*] 账号间注册间隔: {_interval_raw}s")
@@ -3113,6 +3244,7 @@ def run_registration(count):
             local_fail = 0
             local_fail_stats = empty_fail_stats()
             try:
+                _pp.bind_task(scope_key=f"w{wid + 1}")
                 boot_started_at = time.time()
                 try:
                     start_browser(
@@ -3153,6 +3285,13 @@ def run_registration(count):
                     }
                     nsfw_status = "未执行"
                     try:
+                        try:
+                            if _pp.rebind_if_unhealthy():
+                                registration_log(
+                                    f"[W{wid + 1}] [*] 代理节点已切换，本次账号将使用新出口"
+                                )
+                        except Exception as pool_exc:
+                            registration_log(f"[W{wid + 1}] [!] 代理节点切换失败: {pool_exc}")
                         open_signup_page(
                             log_callback=lambda m: registration_log(f"[W{wid+1}] {m}"),
                             cancel_callback=controller.should_stop,
@@ -3378,6 +3517,7 @@ def run_registration(count):
                             except Exception:
                                 pass
             finally:
+                _pp.release_task()
                 try:
                     maybe_stop_browser(
                         user_stopped=bool(controller.should_stop()),
@@ -3409,6 +3549,7 @@ def run_registration(count):
         return
 
     try:
+        _pp.bind_task(scope_key="reg-1")
         boot_started_at = time.time()
         try:
             start_browser(log_callback=registration_log, cancel_callback=controller.should_stop)
@@ -3438,6 +3579,11 @@ def run_registration(count):
                 break
             registration_log(f"--- 开始第 {i + 1}/{count} 个账号 ---")
             attempt_started_at = time.time()
+            try:
+                if _pp.rebind_if_unhealthy():
+                    registration_log("[*] 代理节点已切换，本次账号将使用新出口")
+            except Exception as pool_exc:
+                registration_log(f"[!] 代理节点切换失败: {pool_exc}")
             email = ""
             profile = {}
             sso = ""
@@ -3733,6 +3879,7 @@ def run_registration(count):
     except Exception as exc:
         registration_log(f"[!] 任务异常: {exc}")
     finally:
+        _pp.release_task()
         try:
             user_stopped = bool(controller.should_stop())
             if user_stopped:
