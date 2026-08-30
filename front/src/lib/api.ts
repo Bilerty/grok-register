@@ -123,6 +123,40 @@ export type FlaggedExitIp = {
   last_failure_reason: string;
 };
 
+export type ProxyPoolNodeStatus = "healthy" | "unreachable" | "cooldown" | "flagged";
+
+export type ProxyPoolNode = {
+  key: string;
+  url: string;
+  status: ProxyPoolNodeStatus;
+  cooldown_remaining: number;
+  last_used_at: number;
+  egress_ip: string;
+  latency_ms: number | null;
+  last_error: string;
+  probe_at: number;
+};
+
+export type ProxyPoolSummary = {
+  ok: boolean;
+  mode: "static" | "pool" | "sticky_template";
+  selection: string;
+  sticky_scope: string;
+  cooldown_seconds: number;
+  probe_once_per_batch: boolean;
+  count: number;
+  healthy: number;
+  error: string;
+  batch_probed: boolean;
+  nodes: ProxyPoolNode[];
+};
+
+export type ProxyPoolProbeStats = {
+  total: number;
+  healthy: number;
+  unreachable: number;
+};
+
 export type Stats = {
   total: number;
   success: number;
@@ -499,4 +533,29 @@ export const api = {
       "/api/connectivity",
       { method: "POST" }
     ),
+  proxyPool: () => request<ProxyPoolSummary>("/api/proxy-pool"),
+  importProxyPool: (lines: string[]) =>
+    request<{ ok: boolean; added: string[]; invalid: string[] }>("/api/proxy-pool/import", {
+      method: "POST",
+      body: JSON.stringify({ lines }),
+    }),
+  probeProxyPool: () =>
+    request<{ ok: boolean } & ProxyPoolProbeStats>("/api/proxy-pool/probe", { method: "POST" }),
+  probeProxyPoolNode: (key: string) =>
+    request<{
+      ok: boolean;
+      result: { ok: boolean; egress_ip: string; latency_ms: number | null; error: string };
+    }>("/api/proxy-pool/node/probe", { method: "POST", body: JSON.stringify({ key }) }),
+  clearProxyPoolCooldown: (key: string) =>
+    request<{ ok: boolean; changed: boolean }>("/api/proxy-pool/node/clear-cooldown", {
+      method: "POST",
+      body: JSON.stringify({ key }),
+    }),
+  removeProxyPoolNode: (key: string) =>
+    request<{ ok: boolean; removed: boolean; removed_url: string }>("/api/proxy-pool/node/remove", {
+      method: "POST",
+      body: JSON.stringify({ key }),
+    }),
+  clearProxyPool: () =>
+    request<{ ok: boolean; removed: number }>("/api/proxy-pool/clear", { method: "POST" }),
 };

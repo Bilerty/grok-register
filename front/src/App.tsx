@@ -11,6 +11,7 @@ import { ReloginPage } from "@/pages/Relogin";
 import { ReloginHistoryPage } from "@/pages/ReloginHistory";
 import { CredentialsPage } from "@/pages/Credentials";
 import { ConfigFilePage } from "@/pages/ConfigFile";
+import { ProxyPoolPage } from "@/pages/ProxyPool";
 import { SsoCheckHistoryPage, SsoCheckPage } from "@/pages/SsoCheck";
 import { FlaggedExitIpsPage } from "@/pages/FlaggedExitIps";
 
@@ -104,6 +105,7 @@ export default function App() {
         <Route path="registration/runtime" element={<RegisterPage view="runtime" />} />
         <Route path="register" element={<Navigate to="/registration/new" replace />} />
         <Route path="settings/registration" element={<SettingsPage section="registration" />} />
+        <Route path="settings/proxy" element={<ProxyPoolPage />} />
         {/* TokenAuth 已并入注册设置，保留旧地址并默认打开授权转换 Tab */}
         <Route path="settings/tokenauth" element={<Navigate to="/settings/registration?tab=tokenauth" replace />} />
         {/* 旧路由保留重定向，避免书签/外链 404 */}

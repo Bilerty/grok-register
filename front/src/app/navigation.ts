@@ -4,6 +4,7 @@ import {
   LayoutDashboard,
   Mail,
   MonitorDot,
+  Network,
   PlaySquare,
   RefreshCcw,
   ShieldAlert,
@@ -54,6 +55,7 @@ export const navigationGroups: readonly NavigationGroup[] = [
     label: "系统配置",
     items: [
       { to: "/settings/registration", label: "注册设置", shortLabel: "设置", icon: SlidersHorizontal },
+      { to: "/settings/proxy", label: "代理池", shortLabel: "代理池", icon: Network },
       { to: "/settings/mail", label: "邮箱服务", shortLabel: "邮箱", icon: Mail },
       { to: "/settings/outlook", label: "Outlook 邮箱池", shortLabel: "Outlook", icon: Settings2 },
       { to: "/settings/config", label: "配置文件", shortLabel: "配置", icon: FileJson2 },
