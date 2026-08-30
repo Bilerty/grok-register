@@ -1,31 +1,3 @@
-export type ProxyPoolNode = {
-  url: string;
-  url_display: string;
-  status: "healthy" | "unreachable" | "cooldown";
-  cooldown_remaining: number;
-  last_used_at: number;
-  egress_ip: string;
-  latency_ms: number | null;
-  last_error: string;
-  probe_at: number;
-};
-
-export type ProxyPoolResponse = {
-  ok: boolean;
-  pool: {
-    mode: string;
-    selection: string;
-    sticky_scope: string;
-    cooldown_seconds: number;
-    count: number;
-    healthy: number | null;
-  };
-  total: number;
-  page: number;
-  page_size: number;
-  items: ProxyPoolNode[];
-};
-
 export type JobStatus = {
   running: boolean;
   started_at?: number | null;
@@ -506,31 +478,6 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ config }),
     }),
-  proxyPool: (page = 1, pageSize = 20) =>
-    request<ProxyPoolResponse>(`/api/proxy-pool?page=${page}&page_size=${pageSize}`),
-  proxyPoolImport: (text: string) =>
-    request<{ ok: boolean; added: number; invalid: string[]; total: number }>("/api/proxy-pool/import", {
-      method: "POST",
-      body: JSON.stringify({ text }),
-    }),
-  proxyPoolProbe: () => request<{ ok: boolean; total: number; healthy: number; unreachable: number }>("/api/proxy-pool/probe", { method: "POST" }),
-  proxyPoolProbeNode: (url: string) =>
-    request<{ ok: boolean; result: { ok: boolean; egress_ip: string; latency_ms: number | null; error: string } }>(
-      "/api/proxy-pool/node/probe",
-      { method: "POST", body: JSON.stringify({ url }) }
-    ),
-  proxyPoolClearCooldown: (url: string) =>
-    request<{ ok: boolean }>("/api/proxy-pool/node/clear-cooldown", {
-      method: "POST",
-      body: JSON.stringify({ url }),
-    }),
-  proxyPoolRemoveNode: (url: string) =>
-    request<{ ok: boolean; total: number }>("/api/proxy-pool/node/remove", {
-      method: "POST",
-      body: JSON.stringify({ url }),
-    }),
-  proxyPoolClear: () =>
-    request<{ ok: boolean; removed: number }>("/api/proxy-pool/clear", { method: "POST" }),
   job: () => request<{ ok: boolean; job: JobStatus }>("/api/job"),
   logs: (afterId = 0, limit = 500) =>
     request<{ ok: boolean; logs: LogItem[]; job: JobStatus }>(

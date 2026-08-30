@@ -72,13 +72,6 @@ CONFIG_PUBLIC_KEYS = (
     "outlookemail_pick_mode",
     "outlookemail_disable_after_cpa_success",
     "proxy",
-    "proxy_mode",
-    "proxy_selection",
-    "proxy_sticky_scope",
-    "proxy_file",
-    "proxy_username",
-    "proxy_password",
-    "proxy_cooldown_seconds",
     "enable_nsfw",
     "debug_mode",
     "browser_engine",
@@ -103,7 +96,6 @@ CONFIG_PUBLIC_KEYS = (
     "grok2api_remote_username",
     "grok2api_remote_password",
     "grok2api_auto_import",
-    "grok2api_same_proxy",
     "grok2api_auto_import_build",
     "grok2api_auto_import_web",
     "grok2api_auto_import_console",
@@ -144,20 +136,11 @@ SENSITIVE_HINT_KEYS = {
     "yyds_api_key",
     "yyds_jwt",
     "proxy",
-    "proxy_password",
 }
 
 
 class AccountIdsBody(BaseModel):
     ids: List[int] = Field(default_factory=list)
-
-
-class ProxyPoolImportBody(BaseModel):
-    text: str = ""
-
-
-class ProxyPoolUrlBody(BaseModel):
-    url: str
 
 
 class DeleteAccountsBody(AccountIdsBody):
@@ -354,15 +337,11 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
     proxy_update: Optional[str] = None
     if "proxy" in updates:
         proxy_update = str(updates.get("proxy") or "").strip()
-        for line in proxy_update.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            if line.lower().startswith(("http:", "https:")):
-                try:
-                    validate_http_proxy_url(line)
-                except ValueError as exc:
-                    raise HTTPException(status_code=400, detail=f"网络代理格式错误: {exc}") from exc
+        if proxy_update.lower().startswith(("http:", "https:")):
+            try:
+                proxy_update = validate_http_proxy_url(proxy_update)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=f"网络代理格式错误: {exc}") from exc
     changed: List[str] = []
     for key in CONFIG_PUBLIC_KEYS:
         if key not in updates:
@@ -378,7 +357,6 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
             "sso_detailed_risk_check",
             "cpa_registration_risk_check",
             "grok2api_auto_import",
-            "grok2api_same_proxy",
             "grok2api_auto_import_build",
             "grok2api_auto_import_web",
             "grok2api_auto_import_console",
@@ -1518,116 +1496,6 @@ def create_app() -> FastAPI:
         updates = payload.get("config") if isinstance(payload.get("config"), dict) else payload
         result = _apply_config_updates(updates)
         return {"ok": True, **result}
-
-    # ==================== 代理池管理 ====================
-
-    @app.get("/api/proxy-pool")
-    def api_proxy_pool_get(
-        page: int = Query(1, ge=1),
-        page_size: int = Query(20, ge=1, le=200),
-    ) -> Dict[str, Any]:
-        gr = _gr()
-        gr.load_config()
-        pool = gr._pp.get_pool()
-        nodes = pool.node_list()
-        total = len(nodes)
-        start = (page - 1) * page_size
-        page_nodes = nodes[start:start + page_size]
-        items = []
-        for node in page_nodes:
-            from backend.integrations.proxy import redact_proxy_url
-            items.append({
-                "url": node["url"],
-                "url_display": redact_proxy_url(node["url"]),
-                "status": node["status"],
-                "cooldown_remaining": node["cooldown_remaining"],
-                "last_used_at": node["last_used_at"],
-                "egress_ip": node["egress_ip"],
-                "latency_ms": node["latency_ms"],
-                "last_error": node["last_error"],
-                "probe_at": node["probe_at"],
-            })
-        return {
-            "ok": True,
-            "pool": gr._pp.describe_pool(),
-            "total": total,
-            "page": page,
-            "page_size": page_size,
-            "items": items,
-        }
-
-    @app.post("/api/proxy-pool/import")
-    def api_proxy_pool_import(body: ProxyPoolImportBody) -> Dict[str, Any]:
-        if job_coordinator.status().get("running"):
-            raise HTTPException(status_code=409, detail="注册任务运行中，暂不可修改代理池")
-        gr = _gr()
-        gr.load_config()
-        lines = [line for line in str(body.text or "").splitlines() if line.strip()]
-        if not lines:
-            raise HTTPException(status_code=400, detail="导入内容为空")
-        pool = gr._pp.get_pool()
-        result = pool.add_urls(lines)
-        if result["added"]:
-            merged = list(pool.url_list())
-            gr.config["proxy"] = "\n".join(merged)
-            gr.save_config()
-        return {
-            "ok": True,
-            "added": len(result["added"]),
-            "invalid": result["invalid"],
-            "total": len(pool.url_list()),
-        }
-
-    @app.post("/api/proxy-pool/probe")
-    def api_proxy_pool_probe() -> Dict[str, Any]:
-        gr = _gr()
-        gr.load_config()
-        pool = gr._pp.get_pool()
-        summary = pool.probe_all()
-        return {"ok": True, **summary}
-
-    @app.post("/api/proxy-pool/node/probe")
-    def api_proxy_pool_node_probe(body: ProxyPoolUrlBody) -> Dict[str, Any]:
-        gr = _gr()
-        gr.load_config()
-        pool = gr._pp.get_pool()
-        if body.url not in pool.url_list():
-            raise HTTPException(status_code=404, detail="节点不存在")
-        result = pool.probe_node(body.url)
-        return {"ok": True, "result": result}
-
-    @app.post("/api/proxy-pool/node/clear-cooldown")
-    def api_proxy_pool_node_clear_cooldown(body: ProxyPoolUrlBody) -> Dict[str, Any]:
-        gr = _gr()
-        gr.load_config()
-        pool = gr._pp.get_pool()
-        pool.clear_cooldown(body.url)
-        return {"ok": True}
-
-    @app.post("/api/proxy-pool/node/remove")
-    def api_proxy_pool_node_remove(body: ProxyPoolUrlBody) -> Dict[str, Any]:
-        if job_coordinator.status().get("running"):
-            raise HTTPException(status_code=409, detail="注册任务运行中，暂不可修改代理池")
-        gr = _gr()
-        gr.load_config()
-        pool = gr._pp.get_pool()
-        if not pool.remove_url(body.url):
-            raise HTTPException(status_code=404, detail="节点不存在")
-        gr.config["proxy"] = "\n".join(pool.url_list())
-        gr.save_config()
-        return {"ok": True, "total": len(pool.url_list())}
-
-    @app.post("/api/proxy-pool/clear")
-    def api_proxy_pool_clear() -> Dict[str, Any]:
-        if job_coordinator.status().get("running"):
-            raise HTTPException(status_code=409, detail="注册任务运行中，暂不可修改代理池")
-        gr = _gr()
-        gr.load_config()
-        pool = gr._pp.get_pool()
-        removed = pool.clear()
-        gr.config["proxy"] = ""
-        gr.save_config()
-        return {"ok": True, "removed": removed}
 
     @app.get("/api/job")
     def api_job_status() -> Dict[str, Any]:

@@ -5,7 +5,6 @@ import { DashboardPage } from "@/pages/Dashboard";
 import { AccountsPage } from "@/pages/Accounts";
 import { RegisterPage } from "@/pages/Register";
 import { SettingsPage } from "@/pages/Settings";
-import { ProxyPoolPage } from "@/pages/ProxyPool";
 import { api } from "@/lib/api";
 import { LoginPage } from "@/pages/Login";
 import { ReloginPage } from "@/pages/Relogin";
@@ -112,7 +111,6 @@ export default function App() {
         <Route path="settings/grok2api" element={<Navigate to="/settings/registration?tab=tokenauth" replace />} />
         <Route path="settings/mail" element={<SettingsPage section="mail" />} />
         <Route path="settings/outlook" element={<SettingsPage section="outlook" />} />
-        <Route path="settings/proxy-pool" element={<ProxyPoolPage />} />
         <Route path="settings/config" element={<ConfigFilePage />} />
         <Route path="settings" element={<Navigate to="/settings/registration" replace />} />
         <Route path="*" element={<Navigate to="/overview" replace />} />

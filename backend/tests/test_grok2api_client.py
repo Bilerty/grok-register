@@ -35,10 +35,6 @@ class FakeSession:
         self.calls.append((url, dict(kwargs)))
         return self.responses.pop(0)
 
-    def get(self, url, **kwargs):
-        self.calls.append((url, dict(kwargs)))
-        return self.responses.pop(0)
-
     def close(self):
         self.closed = True
 
@@ -261,68 +257,5 @@ class Grok2APIAutoImportEngineTests(unittest.TestCase):
         self.assertEqual(calls[1].args[0], bundle["grok_console"])
 
 
-class SameProxyPlanTests(unittest.TestCase):
-    """三渠道同池绑定规划：按 proxyIdentity 比对（纯函数测试）。"""
-
-    def _node(self, scope, node_id, configured=True, identity=""):
-        return {
-            "id": str(node_id), "scope": scope, "proxyConfigured": configured,
-            "proxyIdentity": identity,
-        }
-
-    def test_matches_nodes_by_proxy_identity(self):
-        nodes = [
-            self._node("grok_build", 1, identity="platformA.{account}"),
-            self._node("grok_web", 2, identity="platformB.{account}"),
-            self._node("grok_console", 3, identity="platformA.{account}"),
-        ]
-        plan = grok2api_client.plan_same_proxy_bindings(nodes, "platformA.{account}")
-        self.assertEqual(plan["grok_build"], "1")
-        self.assertEqual(plan["grok_web"], None)
-        self.assertEqual(plan["grok_console"], "3")
-
-    def test_ignores_nodes_without_configured_proxy(self):
-        nodes = [self._node("grok_build", 1, configured=False, identity="platformA.{account}")]
-        plan = grok2api_client.plan_same_proxy_bindings(nodes, "platformA.{account}")
-        self.assertIsNone(plan["grok_build"])
-
-    def test_empty_identity_means_create_all(self):
-        nodes = [self._node("grok_build", 1, identity="platformA.{account}")]
-        plan = grok2api_client.plan_same_proxy_bindings(nodes, "")
-        self.assertIsNone(plan["grok_build"])
-        self.assertIsNone(plan["grok_web"])
-
-    def test_identity_mismatch_means_create(self):
-        nodes = [self._node("grok_web", 2, identity="platformB.{account}")]
-        plan = grok2api_client.plan_same_proxy_bindings(nodes, "platformA.{account}")
-        self.assertIsNone(plan["grok_web"])
-
-
-class AdminApiTests(unittest.TestCase):
-    """新增管理 API 方法：登录令牌与响应解析。"""
-
-    def _client(self, responses):
-        session = FakeSession(responses)
-        return Grok2APIClient("https://g2a.test", "admin", "secret", session=session)
-
-    def test_list_egress_nodes_unwraps_items(self):
-        login_resp = FakeResponse(200, {"data": {"tokens": {"accessToken": "tok"}}})
-        list_resp = FakeResponse(200, {"success": True, "data": {"items": [{"id": "7", "name": "n"}]}})
-        client = self._client([login_resp, list_resp])
-        items = client.list_egress_nodes(scope="grok_build")
-        self.assertEqual(items, [{"id": "7", "name": "n"}])
-
-    def test_bind_accounts_posts_ids_as_strings(self):
-        login_resp = FakeResponse(200, {"data": {"tokens": {"accessToken": "tok"}}})
-        bind_resp = FakeResponse(200, {"success": True})
-        client = self._client([login_resp, bind_resp])
-        client.bind_accounts_to_node("11", "grok_web", [101, "102"], mode="manual")
-        bind_call = [call for call in client.session.calls if call[0].endswith("/accounts")]
-        self.assertTrue(bind_call)
-        self.assertEqual(bind_call[-1][1]["json"]["ids"], ["101", "102"])
-
-
 if __name__ == "__main__":
-    unittest.main()
-
     unittest.main()

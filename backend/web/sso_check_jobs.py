@@ -327,25 +327,18 @@ class SsoCheckJobCoordinator:
         gr.load_config()
         account_id = int(record.get("id") or 0)
         email = str(record.get("email") or "").strip()
-        gr._pp.bind_task(scope_key=email, email=email)
-        try:
-            path = self._find_sso_file(record, Path(gr.DATA_DIR), Path(gr.APP_DIR))
-            token = read_sso_token(path)
-            state, compact = inspect_sso_token(
-                token,
-                email,
-                proxy=gr._resolve_cpa_proxy(),
-                user_agent=gr.get_user_agent(),
-                mode="batch_detailed",
-                stage_callback=lambda stage: self._set(stage=stage),
-            )
-            self._persist_result(store, account_id, state, compact)
-            return compact
-        finally:
-            try:
-                gr._pp.release_task()
-            except Exception:
-                pass
+        path = self._find_sso_file(record, Path(gr.DATA_DIR), Path(gr.APP_DIR))
+        token = read_sso_token(path)
+        state, compact = inspect_sso_token(
+            token,
+            email,
+            proxy=gr._resolve_cpa_proxy(),
+            user_agent=gr.get_user_agent(),
+            mode="batch_detailed",
+            stage_callback=lambda stage: self._set(stage=stage),
+        )
+        self._persist_result(store, account_id, state, compact)
+        return compact
 
     @staticmethod
     def _persist_result(store: Any, account_id: int, state: Dict[str, Any], compact: Dict[str, Any]) -> None:

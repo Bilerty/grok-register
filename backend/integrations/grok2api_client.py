@@ -13,39 +13,6 @@ class Grok2APIImportError(RuntimeError):
     """远程 Grok2API 登录或导入失败。"""
 
 
-def plan_same_proxy_bindings(nodes: list, proxy_identity: str = "") -> dict:
-    """为三渠道同一代理做绑定规划（按 proxyIdentity 比对）。
-
-    ``nodes`` 为 Grok2API 出口节点列表（含 scope/proxyConfigured/proxyIdentity/id
-    字段），``proxy_identity`` 为注册代理模板的身份串（如 ``platformA.{account}``，
-    与 Grok2API 侧规则一致：用户名按最后一个 "." 切分后 account 段规范为
-    {account}）。
-
-    返回 ``{scope: node_id|None}``：node_id 表示可直接绑定已有同池节点；
-    None 表示需要新建节点。scope 固定覆盖 grok_build / grok_web /
-    grok_console（console 可与 web 复用，由调用方决定）。
-    """
-    plan: dict[str, str | None] = {
-        "grok_build": None,
-        "grok_web": None,
-        "grok_console": None,
-    }
-    identity = str(proxy_identity or "").strip()
-    for node in nodes:
-        if not isinstance(node, dict):
-            continue
-        scope = str(node.get("scope") or "")
-        if scope not in plan or plan[scope] is not None:
-            continue
-        if not node.get("proxyConfigured"):
-            continue
-        if not identity:
-            continue
-        if str(node.get("proxyIdentity") or "") == identity:
-            plan[scope] = node.get("id")
-    return plan
-
-
 class Grok2APIClient:
     """封装管理员登录、令牌复用、multipart 上传与 SSE 结果解析。"""
 
@@ -319,84 +286,6 @@ class Grok2APIClient:
             except Exception:
                 pass
             multipart.close()
-
-    def _admin_get(self, path: str, params: dict) -> Any:
-        token = self.login()
-        response = self.session.get(
-            f"{self.base_url}{path}",
-            params=params,
-            headers={
-                "Accept": "application/json",
-                "Authorization": f"Bearer {token}",
-            },
-            timeout=self.import_timeout,
-        )
-        if int(getattr(response, "status_code", 0) or 0) != 200:
-            raise Grok2APIImportError(self._response_error(response, "Grok2API 请求失败"))
-        return response.json()
-
-    def _admin_post(self, path: str, body: dict) -> Any:
-        token = self.login()
-        response = self.session.post(
-            f"{self.base_url}{path}",
-            json=body,
-            headers={
-                "Accept": "application/json",
-                "Authorization": f"Bearer {token}",
-            },
-            timeout=self.import_timeout,
-        )
-        if int(getattr(response, "status_code", 0) or 0) not in (200, 201):
-            raise Grok2APIImportError(self._response_error(response, "Grok2API 请求失败"))
-        return response.json()
-
-    @staticmethod
-    def _unwrap_items(payload: Any) -> list:
-        if isinstance(payload, list):
-            return payload
-        if isinstance(payload, dict):
-            data = payload.get("data")
-            if isinstance(data, dict) and isinstance(data.get("items"), list):
-                return data["items"]
-            if isinstance(data, list):
-                return data
-            if isinstance(payload.get("items"), list):
-                return payload["items"]
-        return []
-
-    def list_egress_nodes(self, scope: str = "") -> list:
-        """列出出口节点；scope 留空拉全部渠道。"""
-        params: dict = {"page": 1, "pageSize": 1000}
-        if scope:
-            params["scope"] = scope
-        return self._unwrap_items(self._admin_get("/api/admin/v1/egress-nodes", params))
-
-    def create_egress_node(
-        self, name: str, scope: str, proxy_url: str, enabled: bool = True
-    ) -> dict:
-        """创建出口节点并写入代理地址。"""
-        return self._admin_post(
-            "/api/admin/v1/egress-nodes",
-            {"name": name, "scope": scope, "proxyURL": proxy_url, "enabled": enabled},
-        )
-
-    def list_accounts(self, search: str = "", provider: str = "") -> list:
-        """按搜索词（邮箱）与渠道列出账号。"""
-        params: dict = {"page": 1, "pageSize": 100}
-        if search:
-            params["search"] = search
-        if provider:
-            params["provider"] = provider
-        return self._unwrap_items(self._admin_get("/api/admin/v1/accounts", params))
-
-    def bind_accounts_to_node(
-        self, node_id: str, provider: str, ids: list, mode: str = "manual"
-    ) -> dict:
-        """把指定渠道账号手动绑定到出口节点。"""
-        return self._admin_post(
-            f"/api/admin/v1/egress-nodes/{node_id}/accounts",
-            {"provider": provider, "ids": [str(value) for value in ids], "mode": mode},
-        )
 
     def close(self) -> None:
         """释放客户端自行创建的 HTTP 会话。"""
