@@ -245,6 +245,25 @@ def backfill_registration_risk_bot_risk(log_callback=None) -> int:
     return updated
 
 
+def backfill_grokiq_degraded_bot_risk(log_callback=None) -> int:
+    """把已回传的 GrokIQ 降智结果回填成风控标记。"""
+    try:
+        repo = get_registration_repository()
+    except Exception as exc:
+        if log_callback:
+            log_callback(f"[!] GrokIQ 降智风控回填初始化失败: {exc}")
+        return 0
+    try:
+        updated = repo.backfill_grokiq_degraded_bot_risk()
+    except Exception as exc:
+        if log_callback:
+            log_callback(f"[!] GrokIQ 降智风控回填失败: {exc}")
+        return 0
+    if updated and log_callback:
+        log_callback(f"[*] 已将 {updated} 条 GrokIQ 降智记录标记为风控")
+    return updated
+
+
 def email_registered_successfully(email):
     """数据库或旧账号文件中已有成功/已消耗记录时返回 True。
 
@@ -299,6 +318,7 @@ DEFAULT_CONFIG = {
     "outlookemail_api_key": "",
     "outlookemail_source": "accounts",
     "outlookemail_group_id": "",
+    "outlookemail_code_timeout_group_id": "",
     "outlookemail_web_password": "",
     "outlookemail_session_cookie": "",
     "outlookemail_temp_tag_ids": "",
@@ -1034,6 +1054,26 @@ def get_outlookemail_source():
     return outlookemail_provider.normalize_source(config.get("outlookemail_source", "accounts"))
 
 
+def get_outlookemail_group_id() -> str:
+    return str(config.get("outlookemail_group_id", "") or "").strip()
+
+
+def get_outlookemail_code_timeout_group_id() -> str:
+    return str(config.get("outlookemail_code_timeout_group_id", "") or "").strip()
+
+
+def list_outlookemail_groups() -> list[dict]:
+    return outlookemail_provider.list_groups(
+        http_get,
+        direct_http_session,
+        get_outlookemail_api_base(),
+        api_key=get_outlookemail_api_key(),
+        web_password=str(config.get("outlookemail_web_password", "") or ""),
+        session_cookie=str(config.get("outlookemail_session_cookie", "") or "").strip(),
+        proxies={},
+    )
+
+
 def _outlookemail_account_already_saved(email):
     return email_registered_successfully(email)
 
@@ -1246,6 +1286,78 @@ def outlookemail_get_email_and_token():
     )
 
 
+def maybe_move_outlookemail_for_code_timeout(
+    email,
+    *,
+    reason: str = "",
+    log_callback=None,
+) -> dict | None:
+    """验证码超时把 Outlook 邮箱移到指定分组，不停用。
+
+    只看 outlookemail_code_timeout_group_id：留空不移动，填了就移动。
+    不复用取号分组 outlookemail_group_id。
+    """
+    if not is_outlookemail_registration() or not str(email or "").strip():
+        return None
+    if get_outlookemail_source() != "accounts":
+        return None
+    target = get_outlookemail_code_timeout_group_id()
+    if not target:
+        return None
+    source = get_outlookemail_group_id()
+    if source and outlookemail_provider.same_group_id(source, target):
+        if log_callback:
+            log_callback("[!] 验证码超时目标分组与取号分组相同，跳过移动")
+        return {
+            "status": "skipped_same_group",
+            "account_id": "",
+            "group_id": target,
+            "error": "",
+        }
+
+    normalized_email = str(email).strip()
+    detail = {
+        "status": "not_attempted",
+        "account_id": "",
+        "group_id": target,
+        "error": "",
+    }
+    try:
+        if log_callback:
+            suffix = f"（{reason}）" if str(reason or "").strip() else ""
+            log_callback(
+                f"[OutlookEmail] 验证码超时，正在把邮箱移到分组 {target}: {normalized_email}{suffix}"
+            )
+        result = outlookemail_provider.move_account_to_group(
+            http_get,
+            direct_http_session,
+            get_outlookemail_api_base(),
+            normalized_email,
+            target,
+            api_key=get_outlookemail_api_key(),
+            group_id=source,
+            web_password=str(config.get("outlookemail_web_password", "") or ""),
+            session_cookie=str(config.get("outlookemail_session_cookie", "") or "").strip(),
+            proxies={},
+        )
+        detail.update(
+            status="success",
+            account_id=str(result.get("account_id") or ""),
+            group_id=str(result.get("group_id") or target),
+            error="",
+        )
+        if log_callback:
+            extra = "（原本已在该分组）" if result.get("already_moved") else ""
+            log_callback(
+                f"[+] 验证码超时：Outlook 邮箱已移到分组 {detail['group_id']}{extra}: {normalized_email}"
+            )
+    except Exception as exc:
+        detail.update(status="failed", error=str(exc))
+        if log_callback:
+            log_callback(f"[!] 验证码超时：Outlook 邮箱移动分组失败: {exc}")
+    return detail
+
+
 def outlookemail_get_oai_code(
     email,
     timeout=60,
@@ -1254,26 +1366,37 @@ def outlookemail_get_oai_code(
     cancel_callback=None,
     min_received_at=None,
 ):
-    return outlookemail_provider.wait_for_code(
-        http_get,
-        direct_http_session,
-        get_outlookemail_api_base(),
-        email,
-        api_key=get_outlookemail_api_key(),
-        source=get_outlookemail_source(),
-        web_password=str(config.get("outlookemail_web_password", "") or ""),
-        session_cookie=str(config.get("outlookemail_session_cookie", "") or "").strip(),
-        folder=str(config.get("outlookemail_folder", "all") or "all"),
-        top=config.get("outlookemail_top", 10),
-        proxies={},
-        timeout=timeout,
-        poll_interval=poll_interval,
-        min_received_at=min_received_at,
-        raise_if_cancelled=raise_if_cancelled,
-        sleep_with_cancel=sleep_with_cancel,
-        log_callback=log_callback,
-        cancel_callback=cancel_callback,
-    )
+    try:
+        return outlookemail_provider.wait_for_code(
+            http_get,
+            direct_http_session,
+            get_outlookemail_api_base(),
+            email,
+            api_key=get_outlookemail_api_key(),
+            source=get_outlookemail_source(),
+            web_password=str(config.get("outlookemail_web_password", "") or ""),
+            session_cookie=str(config.get("outlookemail_session_cookie", "") or "").strip(),
+            folder=str(config.get("outlookemail_folder", "all") or "all"),
+            top=config.get("outlookemail_top", 10),
+            proxies={},
+            timeout=timeout,
+            poll_interval=poll_interval,
+            min_received_at=min_received_at,
+            raise_if_cancelled=raise_if_cancelled,
+            sleep_with_cancel=sleep_with_cancel,
+            log_callback=log_callback,
+            cancel_callback=cancel_callback,
+        )
+    except RegistrationCancelled:
+        raise
+    except Exception as exc:
+        if "未收到验证码" in str(exc):
+            maybe_move_outlookemail_for_code_timeout(
+                email,
+                reason=str(exc),
+                log_callback=log_callback,
+            )
+        raise
 
 
 def get_user_agent():

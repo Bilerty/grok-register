@@ -207,12 +207,24 @@ class RegistrationRepositoryMigrationTests(unittest.TestCase):
                     "extra_json": json.dumps({"sso_check_status": "clean"}),
                 }
             )
+            store.add_result(
+                {
+                    "email": "grokiq-degraded@example.com",
+                    "status": "success",
+                    "bot_risk": False,
+                    "extra_json": json.dumps({"grokiq_result": {"degraded": True}}),
+                }
+            )
             risk_rows = store.list_results(bot_risk="1")
             self.assertEqual(
                 [row["email"] for row in risk_rows],
-                ["source-only-risk@example.com", "risk@example.com"],
+                [
+                    "grokiq-degraded@example.com",
+                    "source-only-risk@example.com",
+                    "risk@example.com",
+                ],
             )
-            self.assertEqual(store.count_results(bot_risk="risk"), 2)
+            self.assertEqual(store.count_results(bot_risk="risk"), 3)
             safe_rows = store.list_results(bot_risk="0")
             self.assertEqual(
                 [row["email"] for row in safe_rows],
@@ -479,6 +491,22 @@ class RegistrationRepositoryMigrationTests(unittest.TestCase):
                 "重新登录 SSO 风控异常: botFlagSource=7",
             )
             self.assertEqual(store.backfill_registration_risk_bot_risk(), 0)
+
+    def test_backfill_marks_grokiq_degraded_as_bot_risk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RegistrationRepository(Path(tmp) / "results.sqlite3")
+            account_id = store.add_result(
+                {
+                    "email": "grokiq-risk@example.com",
+                    "status": "success",
+                    "bot_risk": False,
+                    "extra_json": json.dumps({"grokiq_result": {"degraded": True}}),
+                }
+            )
+            self.assertEqual(store.backfill_grokiq_degraded_bot_risk(), 1)
+            refreshed = store.get_results_by_ids([account_id])[0]
+            self.assertEqual(int(refreshed["bot_risk"] or 0), 1)
+            self.assertEqual(store.backfill_grokiq_degraded_bot_risk(), 0)
 
 
 if __name__ == "__main__":

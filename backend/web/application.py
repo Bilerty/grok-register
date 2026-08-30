@@ -531,6 +531,8 @@ def _serialize_record(
     item["sso_risk_check"] = risk_check if isinstance(risk_check, dict) else None
     grokiq_result = extra_data.get("grokiq_result")
     item["grokiq_result"] = grokiq_result if isinstance(grokiq_result, dict) else None
+    if isinstance(item["grokiq_result"], dict) and item["grokiq_result"].get("degraded"):
+        item["bot_risk"] = True
     item["exception_traceback"] = str(extra_data.get("exception_traceback") or "")
     item["exception_type"] = str(extra_data.get("exception_type") or "")
     item["has_exception_traceback"] = bool(item["exception_traceback"])
@@ -821,6 +823,7 @@ def create_app() -> FastAPI:
             repository = gr.get_registration_repository()
             gr.backfill_access_token_bot_risk()
             gr.backfill_registration_risk_bot_risk()
+            gr.backfill_grokiq_degraded_bot_risk()
             grokiq.grokiq_notifier.start(
                 repository,
                 lambda: dict(gr.config),

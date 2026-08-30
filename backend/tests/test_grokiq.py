@@ -242,6 +242,7 @@ class GrokIQOutboxTests(unittest.TestCase):
         stored = json.loads(payload)
         self.assertTrue(stored["grokiq_result"]["degraded"])
         self.assertEqual(stored["grokiq_result"]["verdict"], "degraded")
+        self.assertEqual(int(saved["bot_risk"] or 0), 1)
 
         other_id = self.store.add_result(
             {"email": "callback@example.com", "status": "success"}
@@ -256,6 +257,7 @@ class GrokIQOutboxTests(unittest.TestCase):
         )
         self.assertIsNotNone(matched)
         self.assertEqual(int(matched["id"]), other_id)
+        self.assertEqual(int(matched["bot_risk"] or 0), 0)
 
         missing = self.store.save_grokiq_result(
             {
