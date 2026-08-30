@@ -790,7 +790,7 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                   <div>
                     <CardTitle>GrokIQ Webhook</CardTitle>
                     <CardDescription>
-                      导入成功后发送账号已导入事件；GrokIQ 可把检测结果回传到本机，不会自动删除账号。
+                      导入成功后发送账号已导入事件；GrokIQ 可通过回调通知把检测结果发到本机，不会自动删除账号。
                     </CardDescription>
                   </div>
                 </CardHeader>
@@ -819,7 +819,7 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                     label="请求超时（秒）"
                     field="grokiq_webhook_timeout_seconds"
                     type="number"
-                    helper="导入通知超时。检测结果由 GrokIQ 回调 /api/integrations/grokiq/account-result，共用同一 Token"
+                    helper="导入通知超时。检测结果由 GrokIQ 异步回调通知 /api/integrations/grokiq/notify，共用同一 Token"
                   />
                 </CardContent>
               </Card>

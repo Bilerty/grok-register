@@ -274,7 +274,7 @@ def _auth_required_path(path: str) -> bool:
         "/api/auth/setup",
         "/api/auth/me",
         "/api/auth/logout",
-        "/api/integrations/grokiq/account-result",
+        "/api/integrations/grokiq/notify",
     }
 
 
@@ -838,8 +838,8 @@ def create_app() -> FastAPI:
     def api_health() -> Dict[str, Any]:
         return {"ok": True, "service": "grok-register-web", "version": app_version}
 
-    @app.post("/api/integrations/grokiq/account-result")
-    async def api_grokiq_account_result(request: Request) -> Dict[str, Any]:
+    @app.post("/api/integrations/grokiq/notify")
+    async def api_grokiq_notify(request: Request) -> Dict[str, Any]:
         expected = str(_gr().config.get("grokiq_webhook_token") or "").strip()
         if not expected:
             raise HTTPException(status_code=503, detail="GrokIQ 联动 Token 尚未配置")

@@ -1014,7 +1014,7 @@ class RegistrationRepository:
             return bool(cursor.rowcount)
 
     def save_grokiq_result(self, payload: Dict[str, Any]) -> Dict[str, Any] | None:
-        """Persist a GrokIQ account-result callback onto the matching record."""
+        """Persist a GrokIQ notify callback onto the matching record."""
 
         data = dict(payload or {})
         registration_id = str(data.get("registration_id") or "").strip()
