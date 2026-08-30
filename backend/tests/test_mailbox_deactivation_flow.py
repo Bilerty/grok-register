@@ -164,6 +164,84 @@ class OutlookWorkflowTests(unittest.TestCase):
         self.assertIsNone(detail)
         disable.assert_not_called()
 
+    def test_code_timeout_moves_outlook_account_when_group_configured(self):
+        gr.config.update(
+            {
+                "email_provider": "outlookemail",
+                "outlookemail_source": "accounts",
+                "outlookemail_group_id": "1",
+                "outlookemail_code_timeout_group_id": "14",
+            }
+        )
+        logs = []
+        with mock.patch.object(
+            gr.outlookemail_provider,
+            "move_account_to_group",
+            return_value={"success": True, "account_id": 367, "group_id": 14},
+        ) as move:
+            detail = gr.maybe_move_outlookemail_for_code_timeout(
+                "timeout@outlook.com",
+                reason="未收到验证码",
+                log_callback=logs.append,
+            )
+        self.assertEqual(detail["status"], "success")
+        self.assertEqual(detail["account_id"], "367")
+        self.assertEqual(detail["group_id"], "14")
+        move.assert_called_once()
+        self.assertEqual(move.call_args.kwargs["group_id"], "1")
+        self.assertTrue(any("移到分组 14" in item for item in logs))
+
+    def test_code_timeout_move_skips_when_group_blank(self):
+        gr.config.update(
+            {
+                "email_provider": "outlookemail",
+                "outlookemail_source": "accounts",
+                "outlookemail_group_id": "1",
+                "outlookemail_code_timeout_group_id": "",
+            }
+        )
+        with mock.patch.object(gr.outlookemail_provider, "move_account_to_group") as move:
+            detail = gr.maybe_move_outlookemail_for_code_timeout("timeout@outlook.com")
+        self.assertIsNone(detail)
+        move.assert_not_called()
+
+    def test_code_timeout_move_skips_when_target_matches_pick_group(self):
+        gr.config.update(
+            {
+                "email_provider": "outlookemail",
+                "outlookemail_source": "accounts",
+                "outlookemail_group_id": "1",
+                "outlookemail_code_timeout_group_id": "1",
+            }
+        )
+        with mock.patch.object(gr.outlookemail_provider, "move_account_to_group") as move:
+            detail = gr.maybe_move_outlookemail_for_code_timeout("timeout@outlook.com")
+        self.assertEqual(detail["status"], "skipped_same_group")
+        move.assert_not_called()
+
+    def test_wait_for_code_timeout_triggers_group_move(self):
+        gr.config.update(
+            {
+                "email_provider": "outlookemail",
+                "outlookemail_source": "accounts",
+                "outlookemail_group_id": "1",
+                "outlookemail_code_timeout_group_id": "14",
+            }
+        )
+        with mock.patch.object(
+            gr.outlookemail_provider,
+            "wait_for_code",
+            side_effect=Exception("OutlookEmail 在 60s 内未收到验证码邮件"),
+        ), mock.patch.object(
+            gr,
+            "maybe_move_outlookemail_for_code_timeout",
+            return_value={"status": "success"},
+        ) as move:
+            with self.assertRaisesRegex(Exception, "未收到验证码"):
+                gr.outlookemail_get_oai_code("timeout@outlook.com")
+        move.assert_called_once()
+        self.assertEqual(move.call_args.args[0], "timeout@outlook.com")
+
 
 if __name__ == "__main__":
     unittest.main()

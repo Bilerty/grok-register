@@ -7,6 +7,7 @@ from unittest.mock import patch
 from fastapi import HTTPException
 
 from backend.registration import engine as gr
+from backend.web import application
 from backend.web.application import _apply_config_updates, _config_file_snapshot
 
 
@@ -93,6 +94,14 @@ class ProxyConfigUpdateTests(unittest.TestCase):
 
         self.assertEqual(selected["config"]["browser_traffic_savings_level"], "standard")
         self.assertEqual(fallback["config"]["browser_traffic_savings_level"], "more")
+
+    def test_code_timeout_group_id_defaults_to_blank(self):
+        self.assertEqual(gr.DEFAULT_CONFIG["outlookemail_code_timeout_group_id"], "")
+
+    def test_outlookemail_groups_route_is_registered(self):
+        app = application.create_app()
+        paths = {getattr(route, "path", "") for route in app.routes}
+        self.assertIn("/api/outlookemail/groups", paths)
 
     def test_missing_traffic_savings_level_defaults_to_more(self):
         self.assertEqual(gr.DEFAULT_CONFIG["browser_traffic_savings_level"], "more")
