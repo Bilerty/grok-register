@@ -1013,6 +1013,59 @@ class RegistrationRepository:
             )
             return bool(cursor.rowcount)
 
+    def save_grokiq_result(self, payload: Dict[str, Any]) -> Dict[str, Any] | None:
+        """Persist a GrokIQ account-result callback onto the matching record."""
+
+        data = dict(payload or {})
+        registration_id = str(data.get("registration_id") or "").strip()
+        email = str(data.get("email") or "").strip()
+        now = self.now_text()
+        stored = dict(data)
+        stored["received_at"] = now
+        with self._connect() as conn:
+            row = None
+            try:
+                account_id = int(registration_id)
+            except (TypeError, ValueError):
+                account_id = 0
+            if account_id > 0:
+                row = conn.execute(
+                    "SELECT id, extra_json FROM registration_results WHERE id = ?",
+                    (account_id,),
+                ).fetchone()
+            if row is None and email:
+                row = conn.execute(
+                    """
+                    SELECT id, extra_json
+                    FROM registration_results
+                    WHERE email = ? COLLATE NOCASE
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (email,),
+                ).fetchone()
+            if row is None:
+                return None
+            try:
+                extra = json.loads(str(row["extra_json"] or "{}"))
+                if not isinstance(extra, dict):
+                    extra = {}
+            except (TypeError, ValueError, json.JSONDecodeError):
+                extra = {}
+            extra["grokiq_result"] = stored
+            conn.execute(
+                "UPDATE registration_results SET extra_json = :extra_json WHERE id = :id",
+                {
+                    "extra_json": json.dumps(extra, ensure_ascii=False, sort_keys=True),
+                    "id": int(row["id"]),
+                },
+            )
+            refreshed = conn.execute(
+                "SELECT * FROM registration_results WHERE id = ?",
+                (int(row["id"]),),
+            ).fetchone()
+            return dict(refreshed) if refreshed is not None else {"id": int(row["id"])}
+
 
     @staticmethod
     def _normalize_exit_ip(value: Any) -> str:

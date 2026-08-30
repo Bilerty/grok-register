@@ -245,6 +245,8 @@ Windows 启动：
 | `grokiq_webhook_token` | Webhook 请求头 `x-grokiq-token` |
 | `grokiq_webhook_timeout_seconds` | 单次投递超时；失败后由持久 Outbox 退避重试 |
 
+GrokIQ 检测完成后可回调 `POST /api/integrations/grokiq/account-result`（请求头 `x-grokiq-token`）。账号详情会显示是否降智，注册机不会据此自动删除账号。
+
 统一 Compose 中，`GROKIQ_REGISTER_PROBE_STABILIZATION_SECONDS` 控制 GrokIQ 收到新账号事件后等待多久再创建首次探针，默认 `15` 秒，设为 `0` 可关闭等待。
 
 配置模板见 [`config.example.json`](config.example.json)。

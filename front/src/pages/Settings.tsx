@@ -13,7 +13,7 @@ import {
   ShieldCheck,
   Webhook,
 } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, type OutlookEmailGroup } from "@/lib/api";
 import {
   Button,
   buttonVariants,
@@ -285,6 +285,54 @@ function CloudflareHelp() {
   );
 }
 
+function outlookGroupLabel(group: OutlookEmailGroup) {
+  return `${group.name}（${group.account_count}）`;
+}
+
+function OutlookGroupSelect({
+  label,
+  field,
+  helper = "",
+  emptyLabel,
+  config,
+  onFieldChange,
+  groups,
+  loading,
+}: {
+  label: string;
+  field: string;
+  helper?: string;
+  emptyLabel: string;
+  config: Record<string, any>;
+  onFieldChange: (key: string, value: any) => void;
+  groups: OutlookEmailGroup[];
+  loading: boolean;
+}) {
+  const value = String(config[field] ?? "");
+  const options = groups.filter((group) => !group.is_system || String(group.id) === value);
+  const hasCurrent = !value || options.some((group) => String(group.id) === value);
+  return (
+    <div className="min-w-0 space-y-2">
+      <Label htmlFor={field}>{label}</Label>
+      <Select
+        id={field}
+        value={value}
+        disabled={loading}
+        onChange={(event) => onFieldChange(field, event.target.value)}
+      >
+        <option value="">{emptyLabel}</option>
+        {hasCurrent ? null : <option value={value}>{`分组 ${value}（未找到）`}</option>}
+        {options.map((group) => (
+          <option key={group.id} value={String(group.id)}>
+            {outlookGroupLabel(group)}
+          </option>
+        ))}
+      </Select>
+      {helper ? <p className="text-xs leading-5 text-muted-foreground">{helper}</p> : null}
+    </div>
+  );
+}
+
 export function SettingsPage({ section = "registration" }: { section?: SettingsSection }) {
   const [searchParams] = useSearchParams();
   const [config, setConfig] = useState<Record<string, any>>({});
@@ -293,6 +341,9 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
   const [toast, setToast] = useState<{ message: string; tone?: "default" | "success" | "error" }>({
     message: "",
   });
+  const [outlookGroups, setOutlookGroups] = useState<OutlookEmailGroup[]>([]);
+  const [outlookGroupsLoading, setOutlookGroupsLoading] = useState(false);
+  const [outlookGroupsError, setOutlookGroupsError] = useState("");
 
   const showToast = (message: string, tone: "default" | "success" | "error" = "default") => {
     setToast({ message, tone });
@@ -313,9 +364,29 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
     }
   };
 
+  const loadOutlookGroups = async () => {
+    setOutlookGroupsLoading(true);
+    setOutlookGroupsError("");
+    try {
+      const data = await api.outlookemailGroups();
+      setOutlookGroups(Array.isArray(data.groups) ? data.groups : []);
+    } catch (err: any) {
+      setOutlookGroups([]);
+      setOutlookGroupsError(err.message || "分组加载失败");
+    } finally {
+      setOutlookGroupsLoading(false);
+    }
+  };
+
   useEffect(() => {
     load();
   }, []);
+
+  useEffect(() => {
+    if (section === "outlook") {
+      void loadOutlookGroups();
+    }
+  }, [section]);
 
   const setField = (key: string, value: any) => {
     setConfig((previous) => ({ ...previous, [key]: value }));
@@ -331,6 +402,9 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
       const data = await api.saveConfig(config);
       setConfig(data.config || config);
       showToast(`已保存 ${data.changed?.length || 0} 项配置`, "success");
+      if (section === "outlook") {
+        void loadOutlookGroups();
+      }
     } catch (err: any) {
       showToast(err.message || "保存失败", "error");
     } finally {
@@ -716,7 +790,7 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                   <div>
                     <CardTitle>GrokIQ Webhook</CardTitle>
                     <CardDescription>
-                      仅在 grok_build 导入成功后发送账号已导入事件；注册机不查询监控处理结果。
+                      导入成功后发送账号已导入事件；GrokIQ 可把检测结果回传到本机，不会自动删除账号。
                     </CardDescription>
                   </div>
                 </CardHeader>
@@ -745,7 +819,7 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                     label="请求超时（秒）"
                     field="grokiq_webhook_timeout_seconds"
                     type="number"
-                    helper="注册机只判断 Webhook 是否收到 HTTP 2xx，不读取后续探针或风险结果"
+                    helper="导入通知超时。检测结果由 GrokIQ 回调 /api/integrations/grokiq/account-result，共用同一 Token"
                   />
                 </CardContent>
               </Card>
@@ -959,7 +1033,31 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                 自动停用接口仅适用于 accounts 来源。
               </p>
             </div>
-            <ConfigField {...fieldState} label="分组 ID" field="outlookemail_group_id" />
+            <OutlookGroupSelect
+              {...fieldState}
+              label="取号分组"
+              field="outlookemail_group_id"
+              emptyLabel="全部"
+              groups={outlookGroups}
+              loading={outlookGroupsLoading}
+            />
+            <OutlookGroupSelect
+              {...fieldState}
+              label="验证码超时移到"
+              field="outlookemail_code_timeout_group_id"
+              emptyLabel="不移动"
+              groups={outlookGroups}
+              loading={outlookGroupsLoading}
+            />
+            <div className="sm:col-span-2 flex flex-wrap items-center gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={() => void loadOutlookGroups()} disabled={outlookGroupsLoading}>
+                <RefreshCw className={`h-3.5 w-3.5 ${outlookGroupsLoading ? "animate-spin" : ""}`} aria-hidden="true" />
+                刷新分组
+              </Button>
+              {outlookGroupsError ? (
+                <p className="text-xs text-red-600">{outlookGroupsError}</p>
+              ) : null}
+            </div>
             <div className="min-w-0 space-y-2">
               <Label htmlFor="outlookemail_pick_mode">邮箱选取方式</Label>
               <Select

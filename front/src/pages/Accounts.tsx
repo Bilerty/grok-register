@@ -112,6 +112,35 @@ function grokiqDeliveryLabel(status: string) {
   return labels[status] || status || "未加入队列";
 }
 
+function grokiqResultLabel(result?: AccountRecord["grokiq_result"] | null) {
+  if (!result) return "";
+  if (result.degraded) return "GrokIQ 降智";
+  const labels: Record<string, string> = {
+    degraded: "GrokIQ 降智",
+    quarantined: "GrokIQ 已隔离",
+    high_risk: "GrokIQ 高风险",
+    suspect: "GrokIQ 疑似",
+    insufficient_samples: "GrokIQ 样本不足",
+    probe_failed: "GrokIQ 探针失败",
+    imported: "GrokIQ 已导入",
+    normal: "GrokIQ 正常",
+  };
+  const verdict = String(result.verdict || "").trim();
+  return labels[verdict] || (verdict ? `GrokIQ ${verdict}` : "GrokIQ 已回传");
+}
+
+function grokiqResultVariant(result?: AccountRecord["grokiq_result"] | null) {
+  if (!result) return "secondary" as const;
+  if (result.degraded || result.verdict === "degraded" || result.verdict === "quarantined") {
+    return "destructive" as const;
+  }
+  if (result.verdict === "high_risk" || result.verdict === "probe_failed" || result.verdict === "suspect") {
+    return "warning" as const;
+  }
+  if (result.verdict === "normal") return "success" as const;
+  return "secondary" as const;
+}
+
 function compactBadgeVariant(status: string) {
   if (status === "success") return "success" as const;
   if (status === "failed" || status === "rejected") return "destructive" as const;
@@ -406,6 +435,11 @@ function AccountDetails({
     ["Webhook 尝试次数", String(detail.grokiq_delivery?.attempts || 0)],
     ["Webhook 接收时间", detail.grokiq_delivery?.delivered_at || ""],
     ["Webhook 最近错误", detail.grokiq_delivery?.last_error || ""],
+    ["GrokIQ 检测", grokiqResultLabel(detail.grokiq_result) || "未回传"],
+    ["GrokIQ 降智", detail.grokiq_result ? (detail.grokiq_result.degraded ? "是" : "否") : ""],
+    ["GrokIQ 判定", String(detail.grokiq_result?.verdict || "")],
+    ["GrokIQ 风险分", detail.grokiq_result?.risk_score != null ? String(detail.grokiq_result.risk_score) : ""],
+    ["GrokIQ 回传时间", String(detail.grokiq_result?.received_at || detail.grokiq_result?.occurred_at || "")],
     ["Auth 信息", detail.auth_info],
     ["邮箱池账号 ID", detail.email_account_id],
     ["邮箱停用状态", emailDisableLabel(detail.email_disable_status)],
@@ -446,6 +480,11 @@ function AccountDetails({
           {detail.grokiq_delivery?.status && detail.grokiq_delivery.status !== "not_queued" ? (
             <Badge variant={cpaVariant(detail.grokiq_delivery.status === "delivered" ? "success" : "ready")}>
               Webhook {grokiqDeliveryLabel(detail.grokiq_delivery.status)}
+            </Badge>
+          ) : null}
+          {detail.grokiq_result ? (
+            <Badge variant={grokiqResultVariant(detail.grokiq_result)}>
+              {grokiqResultLabel(detail.grokiq_result)}
             </Badge>
           ) : null}
           <Badge variant={emailDisableVariant(detail.email_disable_status)}>
@@ -1504,6 +1543,16 @@ export function AccountsPage() {
                               <div className="min-w-0">
                                 <div className="truncate font-medium text-foreground" title={item.email}>{item.email || "-"}</div>
                                 <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{item.finished_at || "未记录时间"}</div>
+                                {item.grokiq_result ? (
+                                  <div className="mt-1">
+                                    <Badge
+                                      variant={grokiqResultVariant(item.grokiq_result)}
+                                      className="min-h-5 rounded-md px-1.5 py-0 text-[10px] shadow-none"
+                                    >
+                                      {grokiqResultLabel(item.grokiq_result)}
+                                    </Badge>
+                                  </div>
+                                ) : null}
                                 {reloginRecoveryKind(item) ? (
                                   <div className="mt-2">
                                     <ReloginRecoveryHint
