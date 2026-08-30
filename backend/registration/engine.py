@@ -46,7 +46,12 @@ from backend.registration import signup_flow as _rf
 from backend.integrations import network_checks as _conn
 from backend.integrations import proxy_pool as _pp
 from backend.registration.store import RegistrationRepository
-from backend.integrations.proxy import redact_proxy_text, redact_proxy_url, resolve_proxy_url
+from backend.integrations.proxy import (
+    redact_proxy_text,
+    redact_proxy_url,
+    resolve_proxy_url,
+    validate_http_proxy_url,
+)
 from backend.shared.paths import DATA_ROOT, PROJECT_ROOT
 from backend.automation.session import (
     browser,
@@ -1008,15 +1013,24 @@ EXTENSION_PATH = ""
 DUCKMAIL_API_BASE_DEFAULT = duckmail_provider.API_BASE_DEFAULT
 
 
+def _static_config_proxy() -> str:
+    """配置代理的静态兜底：仅当它是单行合法代理 URL 时返回，pool 多行文本绝不外泄。"""
+    value = str(config.get("proxy", "") or "").strip()
+    if not value or "\n" in value:
+        return ""
+    try:
+        validate_http_proxy_url(value)
+    except ValueError:
+        return ""
+    return value
+
+
 def get_proxies():
-    # 浏览器与 HTTP 客户端的统一出口：任务线程内优先使用池绑定节点，
-    # 未绑定时回退到配置代理（pool 模式不回退多行池文本，由任务绑定负责）。
-    proxy = (
-        _pp.current_proxy_url()
-        or _pp.fallback_proxy_url()
-        or str(config.get("proxy", "") or "")
+    # 浏览器与 HTTP 客户端的统一出口：任务线程内使用池绑定节点；
+    # 未绑定时回退 static/sticky_template 的配置代理，pool 模式不回退多行池文本。
+    proxy = resolve_proxy_url(
+        _pp.current_proxy_url() or _pp.fallback_proxy_url() or _static_config_proxy()
     )
-    proxy = resolve_proxy_url(proxy)
     if proxy:
         return {"http": proxy, "https": proxy}
     return {}
@@ -1540,11 +1554,9 @@ def _normalize_sso_token(raw_token):
 
 
 def _resolve_cpa_proxy():
-    """CPA 换 token 用的代理：任务绑定出口 > config.proxy > 环境变量，否则直连。"""
+    """CPA 换 token 用的代理：任务绑定出口 > static 配置代理 > 环境变量，否则直连。"""
     proxy = resolve_proxy_url(
-        _pp.current_proxy_url()
-        or _pp.fallback_proxy_url()
-        or str(config.get("proxy", "") or "")
+        _pp.current_proxy_url() or _pp.fallback_proxy_url() or _static_config_proxy()
     )
     if proxy:
         return proxy

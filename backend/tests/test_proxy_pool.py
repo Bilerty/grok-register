@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import threading
@@ -355,6 +356,43 @@ class ThreadScopeTests(unittest.TestCase):
             t.join()
         self.assertEqual(len(set(rendered.values())), 3)
         self.assertEqual(pp.current_proxy_url(), "")
+
+
+class PersistenceHardeningTests(unittest.TestCase):
+    def test_load_state_skips_only_corrupt_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = os.path.join(tmp, "state.json")
+            good = make_pool(cooldown_seconds=600, state_file=state_file)
+            good.report_failure("http://a:1", reason="risk")
+            payload = json.loads(open(state_file, encoding="utf-8").read())
+            payload["http://b:2"] = {"status": "healthy", "cooldown_until": "not-a-number"}
+            payload["http://ghost:9"] = {"status": "cooldown"}
+            with open(state_file, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+
+            restored = make_pool(cooldown_seconds=600, state_file=state_file)
+            self.assertEqual(restored._status_of("http://a:1", time.time()), "cooldown")
+            self.assertEqual(restored._status_of("http://b:2", time.time()), "healthy")
+            self.assertNotIn("http://ghost:9", restored._nodes)
+
+    def test_concurrent_persist_keeps_state_file_valid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = os.path.join(tmp, "state.json")
+            pool = make_pool(cooldown_seconds=600, state_file=state_file)
+
+            def worker(index: int):
+                pool.report_failure(pool.urls[index % len(pool.urls)], reason=f"w{index}")
+
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(24)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            data = json.loads(open(state_file, encoding="utf-8").read())
+            self.assertEqual(len(data), 3)
+            for state in data.values():
+                self.assertIn(state["status"], ("cooldown", "healthy"))
 
 
 if __name__ == "__main__":

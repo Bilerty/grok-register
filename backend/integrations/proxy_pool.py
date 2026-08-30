@@ -195,6 +195,10 @@ class ProxyPool:
         # 批次启动前统一探测后置位：此后任务绑定不再逐节点探测
         self._batch_probed = False
         self._lock = threading.Lock()
+        # 落盘串行锁：多线程同时过 dirty gate 时串行写文件，配合版本号防止旧 payload 覆盖新 payload
+        self._persist_lock = threading.Lock()
+        self._persist_version = 0
+        self._written_version = 0
         self._rr = itertools.count()
         self._usage: dict[str, int] = {}
         self._leases: dict[str, str] = {}
@@ -211,12 +215,18 @@ class ProxyPool:
         try:
             with open(self.state_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            if isinstance(data, dict):
-                for url, raw in data.items():
-                    if url in self.urls:
-                        self._nodes[url] = NodeState.from_dict(raw)
         except (OSError, ValueError, TypeError):
-            pass
+            return
+        if not isinstance(data, dict):
+            return
+        # 单条脏数据只丢弃该条，不影响其余节点状态恢复
+        for url, raw in data.items():
+            if url not in self.urls:
+                continue
+            try:
+                self._nodes[url] = NodeState.from_dict(raw)
+            except (TypeError, ValueError):
+                continue
 
     def _persist_state(self) -> None:
         if not self.state_file:
@@ -226,6 +236,8 @@ class ProxyPool:
                 return
             payload = {url: state.to_dict() for url, state in self._nodes.items()}
             self._dirty = False
+            self._persist_version += 1
+            version = self._persist_version
         directory = os.path.dirname(self.state_file)
         if directory:
             try:
@@ -233,17 +245,22 @@ class ProxyPool:
             except OSError:
                 pass
         temporary = f"{self.state_file}.{os.getpid()}.tmp"
-        try:
-            with open(temporary, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False)
-            os.chmod(temporary, 0o600)
-            os.replace(temporary, self.state_file)
-        except OSError:
+        with self._persist_lock:
+            if version < self._written_version:
+                # 已有更新的 payload 落盘，丢弃本次旧快照
+                return
             try:
-                if os.path.exists(temporary):
-                    os.remove(temporary)
+                with open(temporary, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, ensure_ascii=False)
+                os.chmod(temporary, 0o600)
+                os.replace(temporary, self.state_file)
+                self._written_version = version
             except OSError:
-                pass
+                try:
+                    if os.path.exists(temporary):
+                        os.remove(temporary)
+                except OSError:
+                    pass
 
     # ------------------------------------------------------------------
     # 基础行为
@@ -341,16 +358,6 @@ class ProxyPool:
 
         for template in order:
             state = self._nodes.get(template)
-            if state is not None and state.egress_ip and self.ip_flagged is not None:
-                try:
-                    flagged = bool(self.ip_flagged(state.egress_ip))
-                except Exception:
-                    flagged = False
-                if flagged:
-                    state.status = STATUS_FLAGGED
-                    state.last_error = "出口 IP 命中风控名单"
-                    self._dirty = True
-                    continue
             if state is None:
                 state = NodeState()
                 self._nodes[template] = state
@@ -358,10 +365,10 @@ class ProxyPool:
             state.last_used_at = now
             self._dirty = True
             return template
-        raise ProxyPoolExhausted("代理池节点出口 IP 均命中风控名单")
+        raise ProxyPoolExhausted("代理池没有可选节点")
 
     def _pick_with_probe(self, scope_key: str, email: str) -> str:
-        """选定节点并按需探测；探测在锁外进行，失败节点标记后尝试下一个。"""
+        """选定节点并按需探测；探测与风控名单查询都在锁外进行，失败节点标记后尝试下一个。"""
         last_error = ""
         for _ in range(len(self.urls) + 1):
             try:
@@ -371,6 +378,9 @@ class ProxyPool:
                 raise ProxyPoolExhausted(
                     f"{exc}{('：' + last_error) if last_error else ''}"
                 ) from exc
+            if self._is_node_flagged(template):
+                last_error = "出口 IP 命中风控名单"
+                continue
             if self._needs_probe(template):
                 probe_url = self.render(self._expand_template(template, scope_key, email))
                 result = self._probe_url(probe_url)
@@ -382,6 +392,30 @@ class ProxyPool:
         raise ProxyPoolExhausted(
             f"代理池节点探测全部失败{('：' + last_error) if last_error else ''}"
         )
+
+    def _is_node_flagged(self, template: str) -> bool:
+        """节点出口 IP 是否命中上游风控名单；命中则锁外标记隔离。
+
+        名单查询（可能涉及 SQLite）在池锁外执行，锁内只读写状态字段。
+        """
+        with self._lock:
+            state = self._nodes.get(template)
+            egress_ip = state.egress_ip if state else ""
+        if not egress_ip or self.ip_flagged is None:
+            return False
+        try:
+            flagged = bool(self.ip_flagged(egress_ip))
+        except Exception:
+            return False
+        if flagged:
+            with self._lock:
+                state = self._nodes.get(template) or NodeState()
+                state.status = STATUS_FLAGGED
+                state.last_error = "出口 IP 命中风控名单"
+                self._nodes[template] = state
+                self._dirty = True
+            self._persist_state()
+        return flagged
 
     def _needs_probe(self, template: str) -> bool:
         if self.probe is None or self._batch_probed:

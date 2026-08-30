@@ -354,12 +354,15 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
     gr.load_config()
     proxy_update: Optional[str] = None
     if "proxy" in updates:
+        # 单代理与多行代理池统一按行校验：带 http/https 前缀的行必须是合法代理 URL，
+        # 其余行（如历史遗留的无 scheme 写法）保持原样放行，避免整段多行文本被单值校验拒绝。
         proxy_update = str(updates.get("proxy") or "").strip()
-        if proxy_update.lower().startswith(("http:", "https:")):
-            try:
-                proxy_update = validate_http_proxy_url(proxy_update)
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=f"网络代理格式错误: {exc}") from exc
+        try:
+            for line in (ln.strip() for ln in proxy_update.splitlines()):
+                if line and line.lower().startswith(("http:", "https:")):
+                    validate_http_proxy_url(line)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"网络代理格式错误: {exc}") from exc
     changed: List[str] = []
     for key in CONFIG_PUBLIC_KEYS:
         if key not in updates:
@@ -1491,6 +1494,15 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="代理池中没有这个节点")
         return url
 
+    def _ensure_pool_safe_to_modify() -> None:
+        """导入/移除/清空会回写配置并重建全局池，任务运行中一律 409。"""
+        if job_coordinator.status().get("running"):
+            raise HTTPException(status_code=409, detail="注册任务运行中，请等待任务结束后再修改代理池")
+        if relogin_coordinator.status().get("running"):
+            raise HTTPException(status_code=409, detail="账号重新登录中，请等待完成后再修改代理池")
+        if sso_check_coordinator.status().get("running"):
+            raise HTTPException(status_code=409, detail="SSO 详细检查中，请等待完成后再修改代理池")
+
     @app.get("/api/proxy-pool")
     def api_proxy_pool_get() -> Dict[str, Any]:
         info = proxy_pool.describe_pool()
@@ -1501,6 +1513,7 @@ def create_app() -> FastAPI:
     @app.post("/api/proxy-pool/import")
     def api_proxy_pool_import(body: ProxyPoolImportBody) -> Dict[str, Any]:
         gr = _gr()
+        _ensure_pool_safe_to_modify()
         lines = [str(line or "").strip() for line in (body.lines or []) if str(line or "").strip()]
         if not lines:
             raise HTTPException(status_code=400, detail="请提供要导入的代理列表")
@@ -1518,6 +1531,7 @@ def create_app() -> FastAPI:
             gr.config["proxy"] = "\n".join([existing] + result["added"]) if existing else "\n".join(result["added"])
             gr.save_config()
             result["added"] = [redact_proxy_url(url) for url in result["added"]]
+        result["invalid"] = [redact_proxy_url(url) for url in result.get("invalid") or []]
         return {"ok": True, **result}
 
     @app.post("/api/proxy-pool/probe")
@@ -1539,6 +1553,7 @@ def create_app() -> FastAPI:
     @app.post("/api/proxy-pool/node/remove")
     def api_proxy_pool_node_remove(body: ProxyPoolKeyBody) -> Dict[str, Any]:
         gr = _gr()
+        _ensure_pool_safe_to_modify()
         url = _pool_url_by_key(body.key)
         removed = proxy_pool.get_pool().remove_url(url)
         if removed:
@@ -1554,6 +1569,7 @@ def create_app() -> FastAPI:
     @app.post("/api/proxy-pool/clear")
     def api_proxy_pool_clear() -> Dict[str, Any]:
         gr = _gr()
+        _ensure_pool_safe_to_modify()
         if (
             proxy_pool.detect_mode(
                 str(gr.config.get("proxy") or ""), str(gr.config.get("proxy_mode") or "")
@@ -1672,8 +1688,19 @@ def create_app() -> FastAPI:
         gr = _gr()
         gr.load_config()
         gr._wire_runtime_modules()
+        config_snapshot = dict(gr.config)
+        pool = proxy_pool.get_pool()
+        if pool.mode == proxy_pool.MODE_POOL:
+            # 池模式下 config.proxy 是多行文本，不能当单代理检查；
+            # 用当前第一个健康节点代表池出口做连通性检查。
+            healthy = [node for node in pool.node_list() if node["status"] == "healthy"]
+            config_snapshot["proxy"] = (
+                pool.render(pool.find_url_by_key(healthy[0]["key"])) if healthy else ""
+            )
         try:
-            checks = gr._conn.run_connectivity_checks(gr.config, gr.http_get, gr.http_post)
+            checks = gr._conn.run_connectivity_checks(
+                config_snapshot, gr.http_get, gr.http_post
+            )
             items = [
                 {"name": name, "ok": bool(ok), "detail": str(detail)}
                 for name, ok, detail in checks
