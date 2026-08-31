@@ -580,8 +580,12 @@ class ProxyPool:
         self._apply_probe_result(url, result)
         return result
 
-    def probe_all(self, max_workers: int = 4) -> dict:
-        """并发探测全部节点（低并发避免压垮远端网关），返回统计。"""
+    def probe_all(self, max_workers: int = 16) -> dict:
+        """并发探测全部节点，返回统计。
+
+        并发只消耗本地与代理网关连接（探测本身走 check_proxy 的 TCP+trace，
+        不做 ASN/风控名单查询），16 并发对大池（数百节点）仍温和。
+        """
         urls = list(self.urls)
         if not urls:
             return {"total": 0, "healthy": 0, "unreachable": 0}

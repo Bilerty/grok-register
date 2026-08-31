@@ -1035,13 +1035,25 @@ def _configure_proxy_pool():
 
 
 def _preflight_proxy_pool():
-    """批次开始前统一探测池节点，避免注册过程中逐节点探测拖慢任务。"""
+    """批次开始前统一探测池节点，避免注册过程中逐节点探测拖慢任务。
+
+    受 proxy_probe_once_per_batch 开关控制（默认开）；关闭时完全跳过，
+    首次绑定时按需探测单个节点。探测并发随池规模自适应，并有进度日志。
+    """
+    if not bool(config.get("proxy_probe_once_per_batch", True)):
+        return
     pool = _pp.get_pool()
     if pool.mode != _pp.MODE_POOL or pool.empty():
         return
-    registration_log("[*] 预探测代理池节点…")
+    count = len(pool.urls)
+    # 大池自适应并发（受探测网络耗时主导，16 并发对远端网关仍温和）
+    workers = min(16, max(4, count // 8)) if count > 32 else 4
+    registration_log(
+        f"[*] 预探测代理池节点…（{count} 个节点，并发 {workers}，"
+        f"可用 proxy_probe_once_per_batch=false 关闭）"
+    )
     try:
-        stats = pool.probe_all()
+        stats = pool.probe_all(max_workers=workers)
         pool.mark_batch_probed()
         registration_log(
             f"[*] 代理池预探测完成：健康 {stats['healthy']}/{stats['total']}"
