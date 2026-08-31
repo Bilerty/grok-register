@@ -18,7 +18,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from backend.shared.paths import DATA_ROOT
+from backend.shared.paths import DATA_ROOT, PROJECT_ROOT
 
 from curl_cffi import requests
 
@@ -1440,6 +1440,53 @@ def write_grok2api_auth_bundle(
             {"provider": "grok_console", "accounts": [console_account]},
         ),
     }
+
+
+def find_grok2api_auth_files(
+    email: str,
+    auth_dir: Path | str = "",
+    *,
+    fallback_root: Path | str = "",
+) -> dict[str, Path]:
+    """按 email 定位三种 Grok2API 授权 JSON；返回 {provider: Path}（缺哪份少哪份）。
+
+    文件名规则与 write_grok2api_auth_bundle / grok2api_format_filename 完全一致；
+    目录优先级：显式 auth_dir（相对路径基于项目根）> fallback_root（默认
+    data/grok2api_auth）。生产号池推送按此定位要上传的账号文件。
+    """
+    ident = str(email or "").strip()
+    if not ident:
+        return {}
+    safe = _safe_email_for_filename(ident)
+    expected = {
+        "grok_build": f"g2a-{safe}.json",
+        "grok_web": f"grok-web-{safe}.json",
+        "grok_console": f"grok-console-{safe}.json",
+    }
+    fallback = Path(fallback_root) if fallback_root else DATA_ROOT / "grok2api_auth"
+    roots: list[Path] = []
+    seen: set[Path] = set()
+    for raw in (auth_dir, fallback):
+        if not raw:
+            continue
+        path = Path(str(raw)).expanduser()
+        if not path.is_absolute():
+            path = PROJECT_ROOT / path
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if resolved not in seen:
+            seen.add(resolved)
+            roots.append(resolved)
+    found: dict[str, Path] = {}
+    for provider, filename in expected.items():
+        for root in roots:
+            candidate = root / filename
+            if candidate.is_file():
+                found[provider] = candidate
+                break
+    return found
 
 
 def upload_cpa_auth_remote(

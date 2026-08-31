@@ -149,6 +149,61 @@ function grokiqResultVariant(result?: AccountRecord["grokiq_result"] | null) {
   return "secondary" as const;
 }
 
+const PROD_PUSH_DOMAINS = [
+  { key: "grok_build", label: "Build" },
+  { key: "grok_web", label: "Web" },
+  { key: "grok_console", label: "Console" },
+] as const;
+
+function prodPushLabel(status?: string): string {
+  const labels: Record<string, string> = {
+    pushed: "已推正式",
+    partial: "部分推送",
+    failed: "推送失败",
+    skipped: "未推送",
+  };
+  return labels[status || ""] || "未推送";
+}
+
+function prodPushBadgeVariant(status?: string) {
+  if (status === "pushed") return "success" as const;
+  if (status === "partial") return "warning" as const;
+  if (status === "failed") return "destructive" as const;
+  return "secondary" as const;
+}
+
+type ProdDomainEntry = NonNullable<
+  NonNullable<AccountRecord["prod_push"]>["domains"]
+>[string];
+
+function prodGuardBadges(
+  prodPush?: AccountRecord["prod_push"] | null
+): Array<{ label: string; variant: "success" | "destructive" | "warning" | "secondary"; title: string }> {
+  const domains = prodPush?.domains || {};
+  return PROD_PUSH_DOMAINS.map(({ key, label }) => {
+    const entry: ProdDomainEntry | undefined = domains[key];
+    if (!entry) {
+      return {
+        label,
+        variant: "warning" as const,
+        title: `${label} 域未被选定推送`,
+      };
+    }
+    if (entry.status === "pushed" && entry.matched) {
+      return {
+        label,
+        variant: "success" as const,
+        title: `${label} 出口代理守护成功（SID ${entry.sid || "-"} → ${entry.node_name || "-"}）`,
+      };
+    }
+    return {
+      label,
+      variant: "destructive" as const,
+      title: `${label} 出口守护未成功${entry.error ? `：${entry.error}` : entry.matched === false && entry.status === "pushed" ? "（随机绑定回退）" : ""}`,
+    };
+  });
+}
+
 function compactBadgeVariant(status: string) {
   if (status === "success") return "success" as const;
   if (status === "failed" || status === "rejected") return "destructive" as const;
@@ -439,6 +494,8 @@ function AccountDetails({
     ["Grok2API 远程入库", remoteImportLabel(detail.grok2api_remote_status)],
     ["Grok2API 远程入库时间", detail.grok2api_remote_imported_at],
     ["Grok2API 远程错误", detail.grok2api_remote_error],
+    ["正式Grok2API", prodPushLabel(detail.prod_push?.status)],
+    ...(detail.prod_push?.error ? ([[`正式推送错误`, detail.prod_push.error]] as Array<[string, string]>) : []),
     ["Webhook 投递", grokiqDeliveryLabel(detail.grokiq_delivery?.status || "not_queued")],
     ["Webhook 尝试次数", String(detail.grokiq_delivery?.attempts || 0)],
     ["Webhook 接收时间", detail.grokiq_delivery?.delivered_at || ""],
@@ -485,6 +542,16 @@ function AccountDetails({
           <Badge variant={cpaVariant(detail.grok2api_remote_status)}>
             Grok2API {remoteImportLabel(detail.grok2api_remote_status)}
           </Badge>
+          <Badge variant={prodPushBadgeVariant(detail.prod_push?.status)}>
+            正式Grok2API {prodPushLabel(detail.prod_push?.status)}
+          </Badge>
+          {detail.prod_push?.status === "pushed" || detail.prod_push?.status === "partial" || detail.prod_push?.status === "failed"
+            ? prodGuardBadges(detail.prod_push).map((badge) => (
+                <Badge key={badge.label} variant={badge.variant} title={badge.title}>
+                  {badge.label}
+                </Badge>
+              ))
+            : null}
           {detail.grokiq_delivery?.status && detail.grokiq_delivery.status !== "not_queued" ? (
             <Badge variant={cpaVariant(detail.grokiq_delivery.status === "delivered" ? "success" : "ready")}>
               Webhook {grokiqDeliveryLabel(detail.grokiq_delivery.status)}
@@ -1458,6 +1525,16 @@ export function AccountsPage() {
                                   </Badge>
                                 </div>
                               ) : null}
+                              {item.prod_push ? (
+                                <div className="mt-1">
+                                  <Badge
+                                    variant={prodPushBadgeVariant(item.prod_push.status)}
+                                    className="min-h-5 rounded-md px-1.5 py-0 text-[10px] shadow-none"
+                                  >
+                                    正式{prodPushLabel(item.prod_push.status)}
+                                  </Badge>
+                                </div>
+                              ) : null}
                             </div>
                           </div>
                           <div className="mt-2 space-y-2">
@@ -1570,6 +1647,16 @@ export function AccountsPage() {
                                       className="min-h-5 rounded-md px-1.5 py-0 text-[10px] shadow-none"
                                     >
                                       {grokiqResultLabel(item.grokiq_result)}
+                                    </Badge>
+                                  </div>
+                                ) : null}
+                                {item.prod_push ? (
+                                  <div className="mt-1">
+                                    <Badge
+                                      variant={prodPushBadgeVariant(item.prod_push.status)}
+                                      className="min-h-5 rounded-md px-1.5 py-0 text-[10px] shadow-none"
+                                    >
+                                      正式{prodPushLabel(item.prod_push.status)}
                                     </Badge>
                                   </div>
                                 ) : null}

@@ -378,6 +378,14 @@ DEFAULT_CONFIG = {
     "grok2api_auto_import_build": True,
     "grok2api_auto_import_web": False,
     "grok2api_auto_import_console": False,
+    "prod_push_enabled": False,
+    "prod_grok2api_remote_url": "",
+    "prod_grok2api_remote_username": "",
+    "prod_grok2api_remote_password": "",
+    "prod_push_build": True,
+    "prod_push_web": False,
+    "prod_push_console": False,
+    "prod_push_egress_guard": True,
     # CPA 远程上传开关（独立于 cpa_auto_add；后者控制整个 SSO→auth 链路）
     "cpa_upload_enabled": True,
     # Sub2API：注册拿到 SSO 后直接上传 sso-to-oauth

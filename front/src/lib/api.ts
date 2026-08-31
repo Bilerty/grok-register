@@ -108,6 +108,26 @@ export type AccountRecord = {
     received_at?: string;
     source?: string;
   } | null;
+  prod_push?: {
+    status?: string;
+    guard_enabled?: boolean;
+    pushed_at?: string;
+    updated_at?: string;
+    error?: string;
+    staging_disable_error?: string;
+    domains?: Record<
+      string,
+      {
+        status?: string;
+        matched?: boolean;
+        sid?: string;
+        node_name?: string;
+        node_id?: string;
+        prod_account_id?: string;
+        error?: string;
+      }
+    >;
+  } | null;
   extra?: Record<string, unknown>;
   exit_ip?: string;
   exit_ip_at_start?: string;

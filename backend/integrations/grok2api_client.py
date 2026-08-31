@@ -38,6 +38,17 @@ class Grok2APIClient:
         "grok2api_remote_username",
         "grok2api_remote_password",
     )
+    PROVIDER_NODE_SCOPES = {
+        "grok_build": "grok_build",
+        "grok_web": "grok_web",
+        # console 账号可使用 console 或 web 出口节点（见 grok2api scopeSupportsProvider）
+        "grok_console": "grok_console",
+    }
+    ACCOUNT_PATH = "/api/admin/v1/accounts"
+    EGRESS_NODES_PATH = "/api/admin/v1/egress-nodes"
+    EGRESS_ASSIGN_PATH = "/api/admin/v1/egress-nodes/{node_id}/accounts"
+    EGRESS_UNASSIGN_PATH = "/api/admin/v1/egress-nodes/accounts"
+    ACCOUNTS_BATCH_PATH = "/api/admin/v1/accounts/batch"
 
     def __init__(
         self,
@@ -286,6 +297,118 @@ class Grok2APIClient:
             except Exception:
                 pass
             multipart.close()
+
+    def _json_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: Dict[str, Any] | None = None,
+        params: Dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> Dict[str, Any]:
+        """管理员 JSON 请求：登录 + Bearer，返回 data 字段；失败抛错。"""
+        token = self.login()
+        try:
+            response = self.session.request(
+                method,
+                f"{self.base_url}{path}",
+                json=payload,
+                params=params,
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {token}",
+                },
+                timeout=timeout or self.login_timeout,
+            )
+        except Exception as exc:
+            raise Grok2APIImportError(f"连接 Grok2API 接口失败: {exc}") from exc
+        if int(getattr(response, "status_code", 0) or 0) != 200:
+            raise Grok2APIImportError(
+                self._response_error(response, f"Grok2API {method} {path} 失败")
+            )
+        try:
+            body = response.json()
+        except Exception as exc:
+            raise Grok2APIImportError("Grok2API 响应不是有效 JSON") from exc
+        data = body.get("data") if isinstance(body, dict) else None
+        return data if isinstance(data, dict) else {}
+
+    # ------------------------------------------------------------------
+    # 账号与出口节点管理（正式号池推送 / 出口保护用）
+    # ------------------------------------------------------------------
+    def search_account(self, provider: str, email: str) -> Dict[str, Any] | None:
+        """按 email 模糊反查某渠道账号，返回 {id, egress_node_id} 或 None。
+
+        grok2api 的 search 对 name/email/user_id/team_id 做 LIKE 匹配；
+        注册邮箱足够独特，取第一条即可。
+        """
+        data = self._json_request(
+            "GET",
+            self.ACCOUNT_PATH,
+            params={"provider": provider, "search": str(email or "").strip(), "page": 1, "pageSize": 5},
+        )
+        items = data.get("items") or []
+        for item in items:
+            email_value = str(item.get("email") or "").strip().lower()
+            if email_value == str(email or "").strip().lower():
+                node_id = str(item.get("egressNodeId") or "").strip()
+                return {"id": str(item.get("id") or ""), "egress_node_id": node_id}
+        return None
+
+    def list_egress_nodes(self, scope: str) -> list[Dict[str, Any]]:
+        """列出某 scope 的全部出口节点（id/name/enabled/proxyConfigured）。"""
+        nodes: list[Dict[str, Any]] = []
+        page = 1
+        while True:
+            data = self._json_request(
+                "GET",
+                self.EGRESS_NODES_PATH,
+                params={"scope": scope, "page": page, "pageSize": 100},
+            )
+            items = data.get("items") or []
+            for item in items:
+                nodes.append(
+                    {
+                        "id": str(item.get("id") or ""),
+                        "name": str(item.get("name") or ""),
+                        "enabled": bool(item.get("enabled")),
+                        "proxy_configured": bool(item.get("proxyConfigured")),
+                    }
+                )
+            total = int(data.get("total") or 0)
+            if not items or len(nodes) >= total:
+                return nodes
+            page += 1
+
+    def assign_account(
+        self,
+        provider: str,
+        node_id: str,
+        account_id: str,
+        mode: str = "manual",
+    ) -> None:
+        """把账号（字符串 id）manual 绑定到指定出口节点。"""
+        self._json_request(
+            "POST",
+            self.EGRESS_ASSIGN_PATH.format(node_id=str(node_id).strip()),
+            payload={"provider": provider, "ids": [str(account_id)], "mode": mode},
+        )
+
+    def disable_accounts(self, provider: str, account_ids: Iterable[str]) -> int:
+        """批量禁用账号，返回更新条数。"""
+        ids = [str(value) for value in account_ids if str(value).strip()]
+        if not ids:
+            return 0
+        data = self._json_request(
+            "PATCH",
+            self.ACCOUNTS_BATCH_PATH,
+            payload={"ids": ids, "provider": provider, "enabled": False},
+        )
+        try:
+            return int(data.get("updated") or 0)
+        except (TypeError, ValueError):
+            return 0
 
     def close(self) -> None:
         """释放客户端自行创建的 HTTP 会话。"""
