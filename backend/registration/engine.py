@@ -966,6 +966,21 @@ def _pool_ip_flagged(ip):
         return False
 
 
+def pool_aware_config_snapshot() -> dict:
+    """连通性检查用的配置快照：池模式下用第一个健康节点代表池出口。
+
+    config.proxy 在 pool 模式下是多行条目文本（``名称 | URL``），
+    不能当单代理传给网络检查；所有 run_connectivity_checks 调用方
+    （批次启动自检 / 手动连通性检查）都必须经由本助手取配置。
+    """
+    snapshot = dict(config)
+    pool = _pp.get_pool()
+    if pool.mode == _pp.MODE_POOL:
+        healthy = [node for node in pool.node_list() if node["status"] == "healthy"]
+        snapshot["proxy"] = pool.render(pool.find_url_by_key(healthy[0]["key"])) if healthy else ""
+    return snapshot
+
+
 _ASN_CACHE_TTL_SECONDS = 1800.0
 _ASN_MIN_INTERVAL_SECONDS = 1.2
 _asn_cache: dict = {}
@@ -3241,7 +3256,9 @@ def run_registration(count):
     except Exception:
         pass
     try:
-        startup_checks = _conn.run_connectivity_checks(config, http_get, http_post)
+        startup_checks = _conn.run_connectivity_checks(
+            pool_aware_config_snapshot(), http_get, http_post
+        )
         for name, ok, detail in startup_checks:
             registration_log(f"[检查] [{'OK' if ok else 'FAIL'}] {name}: {detail}")
         if _conn.has_blocking_xai_failure(startup_checks):

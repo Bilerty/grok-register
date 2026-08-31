@@ -1695,18 +1695,9 @@ def create_app() -> FastAPI:
         gr = _gr()
         gr.load_config()
         gr._wire_runtime_modules()
-        config_snapshot = dict(gr.config)
-        pool = proxy_pool.get_pool()
-        if pool.mode == proxy_pool.MODE_POOL:
-            # 池模式下 config.proxy 是多行文本，不能当单代理检查；
-            # 用当前第一个健康节点代表池出口做连通性检查。
-            healthy = [node for node in pool.node_list() if node["status"] == "healthy"]
-            config_snapshot["proxy"] = (
-                pool.render(pool.find_url_by_key(healthy[0]["key"])) if healthy else ""
-            )
         try:
             checks = gr._conn.run_connectivity_checks(
-                config_snapshot, gr.http_get, gr.http_post
+                gr.pool_aware_config_snapshot(), gr.http_get, gr.http_post
             )
             items = [
                 {"name": name, "ok": bool(ok), "detail": str(detail)}
