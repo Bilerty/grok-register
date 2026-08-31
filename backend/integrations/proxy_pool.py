@@ -50,6 +50,8 @@ STICKY_SCOPE_TASK = "task"
 PLACEHOLDER_ACCOUNT = "{account}"
 PLACEHOLDER_EMAIL = "{email}"
 
+NAME_SEPARATOR = "|"
+
 STATUS_HEALTHY = "healthy"
 STATUS_UNREACHABLE = "unreachable"
 STATUS_COOLDOWN = "cooldown"
@@ -71,6 +73,18 @@ class ProxyConfigError(Exception):
 
 class ProxyPoolExhausted(Exception):
     """代理池没有可用（健康）节点。"""
+
+
+def parse_proxy_entry(entry: str) -> tuple[str, str]:
+    """解析池条目 ``名称 | 代理URL``，返回 ``(名称, URL)``。
+
+    无 ``|`` 的条目名称为空串；名称与 URL 均去除前后空白。
+    """
+    raw = str(entry or "").strip()
+    if NAME_SEPARATOR in raw:
+        name, _, url = raw.partition(NAME_SEPARATOR)
+        return name.strip(), url.strip()
+    return "", raw
 
 
 def node_key(url: str) -> str:
@@ -120,6 +134,8 @@ class NodeState:
         "latency_ms",
         "last_error",
         "probe_at",
+        "asn",
+        "asn_ip",
     )
 
     def __init__(self):
@@ -130,6 +146,10 @@ class NodeState:
         self.latency_ms = None
         self.last_error = ""
         self.probe_at = 0.0
+        # 出口 IP 的 ASN（ipapi 免费渠道）；asn_ip 记录该 ASN 对应的出口 IP，
+        # 出口轮转后两者不一致即视为过期，绑定/单点探测时自动补查覆盖。
+        self.asn = ""
+        self.asn_ip = ""
 
     def to_dict(self) -> dict:
         return {
@@ -140,6 +160,8 @@ class NodeState:
             "latency_ms": self.latency_ms,
             "last_error": self.last_error,
             "probe_at": self.probe_at,
+            "asn": self.asn,
+            "asn_ip": self.asn_ip,
         }
 
     @classmethod
@@ -156,6 +178,8 @@ class NodeState:
         state.latency_ms = int(latency) if latency is not None else None
         state.last_error = str(data.get("last_error") or "")
         state.probe_at = float(data.get("probe_at") or 0)
+        state.asn = str(data.get("asn") or "")
+        state.asn_ip = str(data.get("asn_ip") or "")
         return state
 
 
@@ -164,7 +188,8 @@ class ProxyPool:
 
     ``probe(proxy_url)`` 返回 ``{"ok": bool, "egress_ip": str,
     "latency_ms": int|None, "error": str}``；``ip_flagged(ip)`` 查询上游
-    风控出口名单。两者均可为空，此时节点默认可用。
+    风控出口名单；``asn_lookup(ip)`` 返回出口 IP 的 ASN 文本（ipapi 等）。
+    后两者可为空，此时相应能力降级：节点默认可用 / 不做 ASN 探测。
     """
 
     def __init__(
@@ -179,6 +204,7 @@ class ProxyPool:
         state_file: str = "",
         probe: Optional[Callable[[str], dict]] = None,
         ip_flagged: Optional[Callable[[str], bool]] = None,
+        asn_lookup: Optional[Callable[[str], str]] = None,
         probe_once_per_batch: bool = False,
     ):
         self.mode = mode
@@ -191,6 +217,7 @@ class ProxyPool:
         self.state_file = state_file
         self.probe = probe
         self.ip_flagged = ip_flagged
+        self.asn_lookup = asn_lookup
         self.probe_once_per_batch = bool(probe_once_per_batch)
         # 批次启动前统一探测后置位：此后任务绑定不再逐节点探测
         self._batch_probed = False
@@ -302,7 +329,9 @@ class ProxyPool:
             return self.urls[0] if self.urls else ""
 
     @staticmethod
-    def _expand_template(url: str, scope_key: str, email: str) -> str:
+    def _expand_template(entry: str, scope_key: str, email: str) -> str:
+        """对条目的 URL 部分做 ``{account}/{email}`` 展开，返回实际使用的 URL。"""
+        _name, url = parse_proxy_entry(entry)
         if PLACEHOLDER_ACCOUNT in url:
             return url.replace(PLACEHOLDER_ACCOUNT, scope_key or "")
         if PLACEHOLDER_EMAIL in url:
@@ -312,8 +341,11 @@ class ProxyPool:
             return url.replace(PLACEHOLDER_EMAIL, local)
         return url
 
-    def render(self, url: str) -> str:
-        """把池条目渲染为实际使用的 URL（并入池级凭据）。"""
+    def render(self, entry: str) -> str:
+        """把条目渲染为实际使用的代理 URL（取 URL 部分并入池级凭据）。"""
+        if not entry:
+            return ""
+        _name, url = parse_proxy_entry(entry)
         if not url:
             return ""
         return build_proxy_credentials_url(url, self.username, self.password)
@@ -330,12 +362,16 @@ class ProxyPool:
         return [url for url in self.urls if self._status_of(url, now) == STATUS_HEALTHY]
 
     def _resolve_locked(self, scope_key: str, email: str) -> str:
-        """static / sticky_template 的解析（pool 模式走 ``_resolve_pool``）。"""
+        """static / sticky_template 的解析（pool 模式走 ``_resolve_pool``）。
+
+        返回条目 URL 部分的展开结果（未并入池级凭据）。
+        """
         if not self.urls:
             return ""
         if self.mode == MODE_STICKY_TEMPLATE:
             return self._expand_template(self.urls[0], scope_key, email)
-        return self.urls[0]
+        _name, url = parse_proxy_entry(self.urls[0])
+        return url
 
     def _pick_locked(self, scope_key: str, email: str) -> str:
         """锁内选定节点：按健康状态与策略排序，跳过出口 IP 命中风控名单的节点。
@@ -383,7 +419,7 @@ class ProxyPool:
                 continue
             if self._needs_probe(template):
                 probe_url = self.render(self._expand_template(template, scope_key, email))
-                result = self._probe_url(probe_url)
+                result = self._probe_url(probe_url, with_asn=True)
                 self._apply_probe_result(template, result)
                 if not result.get("ok"):
                     last_error = str(result.get("error") or "探测失败")
@@ -424,7 +460,7 @@ class ProxyPool:
             state = self._nodes.get(template)
             return state is None or state.probe_at <= 0
 
-    def _probe_url(self, url: str) -> dict:
+    def _probe_url(self, url: str, with_asn: bool = False) -> dict:
         if self.probe is None:
             return {"ok": True, "egress_ip": "", "latency_ms": None, "error": ""}
         try:
@@ -433,12 +469,26 @@ class ProxyPool:
             return {"ok": False, "egress_ip": "", "latency_ms": None, "error": str(exc)[:200]}
         if not isinstance(result, dict):
             return {"ok": False, "egress_ip": "", "latency_ms": None, "error": "探测回调返回异常"}
-        return {
+        normalized = {
             "ok": bool(result.get("ok")),
             "egress_ip": str(result.get("egress_ip") or ""),
             "latency_ms": result.get("latency_ms"),
             "error": str(result.get("error") or "")[:200],
         }
+        # ASN 探测仅用于单节点路径（选中/手动）；批量探测受 ipapi 免费额度限制不做
+        if (
+            with_asn
+            and normalized["ok"]
+            and normalized["egress_ip"]
+            and self.asn_lookup is not None
+        ):
+            try:
+                asn = str(self.asn_lookup(normalized["egress_ip"]) or "").strip()
+            except Exception:
+                asn = ""
+            if asn:
+                normalized["asn"] = asn[:120]
+        return normalized
 
     def _apply_probe_result(self, template: str, result: dict) -> None:
         now = time.time()
@@ -455,6 +505,37 @@ class ProxyPool:
             else:
                 state.status = STATUS_UNREACHABLE
                 state.last_error = str(result.get("error") or "")[:200]
+            # 仅在本次探测携带 ASN 时覆盖（批量探测不带，保留旧值作暂存）
+            if result.get("asn"):
+                state.asn = str(result.get("asn"))[:120]
+                state.asn_ip = state.egress_ip
+            self._nodes[template] = state
+            self._dirty = True
+        self._persist_state()
+
+    def ensure_asn(self, template: str) -> None:
+        """绑定节点后的 ASN 补查：出口 IP 轮转（与上次记录不一致）时刷新 ASN。
+
+        查询由引擎侧缓存与限速兜底；查询失败保留旧值。
+        """
+        if self.asn_lookup is None:
+            return
+        with self._lock:
+            state = self._nodes.get(template)
+            egress_ip = state.egress_ip if state else ""
+            stale = bool(egress_ip) and state is not None and state.asn_ip != egress_ip
+        if not stale:
+            return
+        try:
+            asn = str(self.asn_lookup(egress_ip) or "").strip()
+        except Exception:
+            return
+        if not asn:
+            return
+        with self._lock:
+            state = self._nodes.get(template) or NodeState()
+            state.asn = asn[:120]
+            state.asn_ip = egress_ip
             self._nodes[template] = state
             self._dirty = True
         self._persist_state()
@@ -494,8 +575,8 @@ class ProxyPool:
     # 健康管理
     # ------------------------------------------------------------------
     def probe_node(self, url: str) -> dict:
-        """手动探测单个节点（渲染后的 URL 交给探测回调）。"""
-        result = self._probe_url(self.render(url))
+        """手动探测单个节点：附带 ASN 探测（批量探测不做，见 ipapi 免费额度限制）。"""
+        result = self._probe_url(self.render(url), with_asn=True)
         self._apply_probe_result(url, result)
         return result
 
@@ -602,6 +683,7 @@ class ProxyPool:
             return [
                 {
                     "key": node_key(url),
+                    "name": parse_proxy_entry(url)[0],
                     "url": url,
                     "status": self._status_of(url, now),
                     "cooldown_remaining": (
@@ -611,6 +693,7 @@ class ProxyPool:
                     ),
                     "last_used_at": self._nodes[url].last_used_at if self._nodes.get(url) else 0.0,
                     "egress_ip": self._nodes[url].egress_ip if self._nodes.get(url) else "",
+                    "asn": self._nodes[url].asn if self._nodes.get(url) else "",
                     "latency_ms": self._nodes[url].latency_ms if self._nodes.get(url) else None,
                     "last_error": self._nodes[url].last_error if self._nodes.get(url) else "",
                     "probe_at": self._nodes[url].probe_at if self._nodes.get(url) else 0.0,
@@ -626,25 +709,37 @@ class ProxyPool:
         return ""
 
     def add_urls(self, lines: list[str]) -> dict:
-        """批量导入：校验 + 去重 + 追加。"""
+        """批量导入：``名称 | URL`` 或纯 URL；校验 + 按 URL 部分查重 + 追加。
+
+        无名称的条目按本批次固定哈希 + 两位顺序编号自动命名（如 ``9f3ab2-01``），
+        名称写入条目原文持久化；同一 URL 已存在时忽略新行（不做重命名）。
+        """
         added: list[str] = []
         invalid: list[str] = []
+        raw_lines = [str(line or "").strip() for line in lines if str(line or "").strip()]
+        batch_hash = hashlib.sha1("\n".join(raw_lines).encode("utf-8")).hexdigest()[:6]
+        auto_seq = 0
         with self._lock:
-            existing = set(self.urls)
-            for line in lines:
-                value = str(line or "").strip()
-                if not value:
+            url_index = {parse_proxy_entry(entry)[1]: entry for entry in self.urls}
+            for line in raw_lines:
+                name, url = parse_proxy_entry(line)
+                if not url:
+                    invalid.append(line)
                     continue
                 try:
-                    validate_http_proxy_url(value)
+                    validate_http_proxy_url(url)
                 except ValueError:
-                    invalid.append(value)
+                    invalid.append(line)
                     continue
-                if value in existing:
+                if url in url_index:
                     continue
-                existing.add(value)
-                self.urls.append(value)
-                added.append(value)
+                if not name:
+                    auto_seq += 1
+                    name = f"{batch_hash}-{auto_seq:02d}"
+                entry = f"{name} | {url}"
+                url_index[url] = entry
+                self.urls.append(entry)
+                added.append(entry)
                 self._dirty = True
         self._persist_state()
         return {"added": added, "invalid": invalid}
@@ -710,8 +805,12 @@ def build_pool_from_config(
     state_file: str = "",
     probe: Optional[Callable[[str], dict]] = None,
     ip_flagged: Optional[Callable[[str], bool]] = None,
+    asn_lookup: Optional[Callable[[str], str]] = None,
 ) -> ProxyPool:
-    """按配置构建 ProxyPool；config_get(key, default) 读取配置项。"""
+    """按配置构建 ProxyPool；config_get(key, default) 读取配置项。
+
+    池条目支持 ``名称 | URL`` 与纯 URL 两种写法；校验只针对 URL 部分。
+    """
     proxy_value = str(config_get("proxy", "") or "").strip()
     raw_mode = str(config_get("proxy_mode", "") or "").strip().lower()
     if raw_mode and raw_mode not in VALID_MODES:
@@ -740,6 +839,7 @@ def build_pool_from_config(
     probe_once = bool(config_get("proxy_probe_once_per_batch", True))
 
     urls: list[str] = []
+    seen_urls: set[str] = set()
     if mode == MODE_POOL:
         candidates = [line.strip() for line in proxy_value.splitlines() if line.strip()]
         proxy_file = str(config_get("proxy_file", "") or "").strip()
@@ -752,11 +852,15 @@ def build_pool_from_config(
                 [line.strip() for line in content.splitlines() if line.strip()]
             )
         for candidate in candidates:
+            _entry_name, url = parse_proxy_entry(candidate)
+            if not url:
+                raise ProxyConfigError("代理池条目缺少代理地址")
             try:
-                validate_http_proxy_url(candidate)
+                validate_http_proxy_url(url)
             except ValueError as exc:
                 raise ProxyConfigError(f"代理池条目无效: {exc}") from exc
-            if candidate not in urls:
+            if url not in seen_urls:
+                seen_urls.add(url)
                 urls.append(candidate)
         if not urls:
             raise ProxyConfigError("proxy_mode=pool 但代理池为空")
@@ -773,10 +877,12 @@ def build_pool_from_config(
                 state_file=state_file,
                 probe=probe,
                 ip_flagged=ip_flagged,
+                asn_lookup=asn_lookup,
                 probe_once_per_batch=probe_once,
             )
+        _name, static_url = parse_proxy_entry(proxy_value)
         try:
-            validate_http_proxy_url(proxy_value)
+            validate_http_proxy_url(static_url)
         except ValueError as exc:
             raise ProxyConfigError(f"代理配置无效: {exc}") from exc
         urls = [proxy_value]
@@ -792,6 +898,7 @@ def build_pool_from_config(
         state_file=state_file,
         probe=probe,
         ip_flagged=ip_flagged,
+        asn_lookup=asn_lookup,
         probe_once_per_batch=probe_once,
     )
 
@@ -885,6 +992,11 @@ def bind_task(scope_key: str = "", email: str = "") -> str:
     _tls.raw_url = template
     _tls.rendered_url = rendered
     _tls.scope_key = scope_key
+    try:
+        # 出口 IP 轮转后自动补查 ASN（引擎侧有缓存与限速；失败静默保留旧值）
+        pool.ensure_asn(template)
+    except Exception:
+        pass
     return rendered
 
 

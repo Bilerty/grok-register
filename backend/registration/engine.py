@@ -966,6 +966,52 @@ def _pool_ip_flagged(ip):
         return False
 
 
+_ASN_CACHE_TTL_SECONDS = 1800.0
+_ASN_MIN_INTERVAL_SECONDS = 1.2
+_asn_cache: dict = {}
+_asn_lock = threading.Lock()
+_asn_rate_lock = threading.Lock()
+_asn_last_request = [0.0]
+
+
+def _lookup_ip_asn(ip: str) -> str:
+    """查询出口 IP 的 ASN（ip-api.com 免费渠道，如 ``AS4134 Chinanet``）。
+
+    免费版限速 45 次/分钟/来源 IP，故带 30 分钟 TTL 缓存与全局限速；
+    查询失败返回空串，池侧保留既有 ASN 暂存值。仅在单节点探测路径调用，
+    批量预探测不做 ASN（避免触发限速）。
+    """
+    value = str(ip or "").strip()
+    if not value:
+        return ""
+    now = time.monotonic()
+    with _asn_lock:
+        cached = _asn_cache.get(value)
+        if cached and now - cached[0] < _ASN_CACHE_TTL_SECONDS:
+            return cached[1]
+    with _asn_rate_lock:
+        wait = _ASN_MIN_INTERVAL_SECONDS - (time.monotonic() - _asn_last_request[0])
+        if wait > 0:
+            time.sleep(wait)
+        _asn_last_request[0] = time.monotonic()
+    asn = ""
+    try:
+        with requests.Session(trust_env=False) as session:
+            response = session.get(
+                f"http://ip-api.com/json/{value}",
+                params={"fields": "status,as,message"},
+                timeout=(3, 6),
+            )
+        payload = response.json()
+        if payload.get("status") == "success":
+            asn = str(payload.get("as") or "").strip()
+    except Exception:
+        asn = ""
+    with _asn_lock:
+        _asn_cache[value] = (time.monotonic(), asn)
+    return asn
+
+
 def _build_proxy_pool_from_config():
     def file_read(path):
         with open(path, "r", encoding="utf-8") as f:
@@ -977,6 +1023,7 @@ def _build_proxy_pool_from_config():
         state_file=str(DATA_ROOT / "proxy_pool_state.json"),
         probe=_pool_probe_node,
         ip_flagged=_pool_ip_flagged,
+        asn_lookup=_lookup_ip_asn,
     )
 
 
@@ -1014,15 +1061,19 @@ DUCKMAIL_API_BASE_DEFAULT = duckmail_provider.API_BASE_DEFAULT
 
 
 def _static_config_proxy() -> str:
-    """配置代理的静态兜底：仅当它是单行合法代理 URL 时返回，pool 多行文本绝不外泄。"""
+    """配置代理的静态兜底：仅当它是单行合法代理 URL 时返回（支持 ``名称 | URL``），
+    pool 多行文本绝不外泄。"""
     value = str(config.get("proxy", "") or "").strip()
     if not value or "\n" in value:
         return ""
+    _name, url = _pp.parse_proxy_entry(value)
+    if not url:
+        return ""
     try:
-        validate_http_proxy_url(value)
+        validate_http_proxy_url(url)
     except ValueError:
         return ""
-    return value
+    return url
 
 
 def get_proxies():

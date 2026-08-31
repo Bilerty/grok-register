@@ -29,7 +29,11 @@ from .jobs import job_coordinator
 from .relogin_jobs import relogin_coordinator
 from .sso_check_jobs import sso_check_coordinator
 from .update_check import ReleaseUpdateService
-from backend.integrations.proxy import redact_proxy_url, validate_http_proxy_url
+from backend.integrations.proxy import (
+    redact_proxy_text,
+    redact_proxy_url,
+    validate_http_proxy_url,
+)
 from backend.integrations import proxy_pool
 from backend.integrations import grokiq
 from backend.shared.paths import DATA_ROOT, PROJECT_ROOT, STATIC_ROOT
@@ -354,13 +358,16 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
     gr.load_config()
     proxy_update: Optional[str] = None
     if "proxy" in updates:
-        # 单代理与多行代理池统一按行校验：带 http/https 前缀的行必须是合法代理 URL，
-        # 其余行（如历史遗留的无 scheme 写法）保持原样放行，避免整段多行文本被单值校验拒绝。
+        # 单代理与多行代理池统一按行校验：支持 `名称 | URL` 格式（仅校验 URL 部分）；
+        # 带 http/https 前缀的 URL 行必须是合法代理 URL，其余行保持原样放行。
         proxy_update = str(updates.get("proxy") or "").strip()
         try:
             for line in (ln.strip() for ln in proxy_update.splitlines()):
-                if line and line.lower().startswith(("http:", "https:")):
-                    validate_http_proxy_url(line)
+                if not line:
+                    continue
+                _entry_name, url = proxy_pool.parse_proxy_entry(line)
+                if url.lower().startswith(("http:", "https:")):
+                    validate_http_proxy_url(url)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=f"网络代理格式错误: {exc}") from exc
     changed: List[str] = []
@@ -1507,7 +1514,7 @@ def create_app() -> FastAPI:
     def api_proxy_pool_get() -> Dict[str, Any]:
         info = proxy_pool.describe_pool()
         for node in info.get("nodes") or []:
-            node["url"] = redact_proxy_url(node.get("url", ""))
+            node["url"] = redact_proxy_text(node.get("url", ""))
         return {"ok": True, **info}
 
     @app.post("/api/proxy-pool/import")
@@ -1530,8 +1537,8 @@ def create_app() -> FastAPI:
             existing = str(gr.config.get("proxy") or "").strip()
             gr.config["proxy"] = "\n".join([existing] + result["added"]) if existing else "\n".join(result["added"])
             gr.save_config()
-            result["added"] = [redact_proxy_url(url) for url in result["added"]]
-        result["invalid"] = [redact_proxy_url(url) for url in result.get("invalid") or []]
+            result["added"] = [redact_proxy_text(url) for url in result["added"]]
+        result["invalid"] = [redact_proxy_text(url) for url in result.get("invalid") or []]
         return {"ok": True, **result}
 
     @app.post("/api/proxy-pool/probe")
@@ -1564,7 +1571,7 @@ def create_app() -> FastAPI:
             ]
             gr.config["proxy"] = "\n".join(lines)
             gr.save_config()
-        return {"ok": True, "removed": removed, "removed_url": redact_proxy_url(url)}
+        return {"ok": True, "removed": removed, "removed_url": redact_proxy_text(url)}
 
     @app.post("/api/proxy-pool/clear")
     def api_proxy_pool_clear() -> Dict[str, Any]:
