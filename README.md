@@ -222,7 +222,7 @@ Windows 启动：
 | `email_provider` | 邮箱服务商 |
 | `register_count` | 注册数量 |
 | `register_workers` | 并发数量，默认 1 |
-| `proxy` | 注册和 OAuth 请求使用的 HTTP(S) 代理；支持 `http://host:port` 和 `http://user:password@host:port`，凭据中的特殊字符需使用 URL 百分号编码。代理池条目支持 `名称 \| 代理URL`（如 `hk-office-01 \| http://user:pass@gw:4000`）或纯 URL，无名称条目导入时按批次哈希+顺序编号自动命名。注册风控会记录浏览器识别到的出口 IP；下次若仍是该 IP，会重启浏览器换出口后再注册。风控名单在「账号中心 → 出口 IP 风控」查看，单账号出口 IP 在「账号中心 → 账号管理 → 查看」详情中。多行内容（每行一条）即代理池；配合下方 `proxy_*` 配置使用 |
+| `proxy` | 注册和 OAuth 请求使用的代理；支持 `http://`、`https://`、`socks5://`、`socks5h://`（socks5h 由代理解析域名，防 DNS 泄露），格式 `scheme://host:port` 或 `scheme://user:password@host:port`，凭据中的特殊字符需使用 URL 百分号编码。代理池条目支持 `名称 \| 代理URL`（如 `hk-office-01 \| socks5h://user:pass@gw:4000`）或纯 URL，无名称条目导入时按批次哈希+顺序编号自动命名。注册风控会记录浏览器识别到的出口 IP；下次若仍是该 IP，会重启浏览器换出口后再注册。风控名单在「账号中心 → 出口 IP 风控」查看，单账号出口 IP 在「账号中心 → 账号管理 → 查看」详情中。多行内容（每行一条）即代理池；配合下方 `proxy_*` 配置使用 |
 | `proxy_mode` | `static` 单代理 / `pool` 代理池 / `sticky_template` 粘性模板（含 `{account}`、`{email}` 占位符）；留空按内容自动识别 |
 | `proxy_selection` | 池选择策略：`round_robin`（默认）/ `random` / `least_used` |
 | `proxy_sticky_scope` | 粘性范围：`task`（默认，注册 worker 绑定节点，浏览器与 HTTP 同出口）/ `none`（每次选择可能变化） |

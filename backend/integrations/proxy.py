@@ -14,6 +14,10 @@ from urllib.parse import unquote, urlsplit, urlunsplit
 
 LOCAL_PROXY_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
 HTTP_PROXY_SCHEMES = frozenset({"http", "https"})
+# SOCKS5（socks5h：域名由代理解析，适合防 DNS 泄露）；libcurl 与 Playwright 两个
+# 浏览器后端均原生支持。
+SOCKS_PROXY_SCHEMES = frozenset({"socks5", "socks5h"})
+VALID_PROXY_SCHEMES = HTTP_PROXY_SCHEMES | SOCKS_PROXY_SCHEMES
 
 _BAD_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 _AUTHENTICATED_PROXY_IN_TEXT = re.compile(
@@ -62,8 +66,8 @@ def validate_http_proxy_url(proxy_url: str) -> str:
         host = parsed.hostname
     except ValueError as exc:
         raise ValueError(f"代理地址无效: {exc}") from exc
-    if scheme not in HTTP_PROXY_SCHEMES:
-        raise ValueError("HTTP 认证代理需使用 http:// 或 https://")
+    if scheme not in VALID_PROXY_SCHEMES:
+        raise ValueError("代理协议需使用 http://、https://、socks5:// 或 socks5h://")
     if not host:
         raise ValueError("代理地址缺少主机名")
     if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
