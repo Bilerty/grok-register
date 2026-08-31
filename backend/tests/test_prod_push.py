@@ -74,6 +74,24 @@ class SidTests(unittest.TestCase):
         self.assertEqual(pp.extract_sid(""), "")
 
 
+class CasefoldAuthFileTests(unittest.TestCase):
+    def test_find_auth_files_matches_case_insensitively(self):
+        from backend.integrations import auth_exchange
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # 文件按原始大小写命名（注册 email 为大写）
+            with open(os.path.join(tmp, "g2a-OE8SCP0R22@outlook.com.json"), "w") as f:
+                f.write("{}")
+            # 查找用小写 email（webhook 链路小写化后的形态）
+            found = auth_exchange.find_grok2api_auth_files(
+                "oe8scp0r22@outlook.com", tmp
+            )
+            self.assertIn("grok_build", found)
+            self.assertEqual(
+                found["grok_build"].name, "g2a-OE8SCP0R22@outlook.com.json"
+            )
+
+
 class SelectedDomainsTests(unittest.TestCase):
     def test_intersection_with_staging_targets(self):
         config = {
@@ -257,10 +275,10 @@ class ExecuteProdPushTests(unittest.TestCase):
     def test_guard_disabled_and_missing_file_marks_failed(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo, record_id = self._repository(tmp)
-            email = "user2@example.com"
+            email = "user1@example.com"
             auth_dir = os.path.join(tmp, "auth")
             os.makedirs(auth_dir)
-            with open(os.path.join(auth_dir, "g2a-user2@example.com.json"), "w") as f:
+            with open(os.path.join(auth_dir, "g2a-user1@example.com.json"), "w") as f:
                 f.write("{}")
             staging = FakeClient(accounts={("grok_build", email): {"id": "21", "egress_node_id": "5"}})
             prod = FakeClient(

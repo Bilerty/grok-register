@@ -165,26 +165,34 @@ def execute_prod_push(
         result["error"] = "没有选定任何可推送域"
         return result
 
-    auth_files = auth_exchange.find_grok2api_auth_files(
-        email, config.get("grok2api_auth_dir", "")
-    )
     staging_client: Optional[Grok2APIClient] = None
     if Grok2APIClient.is_configured(config):
         staging_client = Grok2APIClient.from_config(config)
     prod_client = prod_client_from_config(config)
 
     previous: Dict[str, Any] = {}
+    # 邮箱大小写修正：webhook 入队时 email 被小写化，而授权 JSON 文件名
+    # 保留注册时的原始大小写，文件查找必须用 DB 记录的原始 email。
     try:
         records = repository.get_results_by_ids([int(registration_id)])
-        if records:
-            extra = records[0].get("extra") or records[0].get("extra_json") or {}
-            if isinstance(extra, str):
-                import json as _json
-
-                extra = _json.loads(extra or "{}")
-            previous = (extra.get("prod_push") or {}).get("domains") or {}
     except Exception:
-        previous = {}
+        records = []
+    if records:
+        original_email = str(records[0].get("email") or "").strip() or email
+    else:
+        original_email = email
+        records = []
+    if records:
+        extra = records[0].get("extra") or records[0].get("extra_json") or {}
+        if isinstance(extra, str):
+            import json as _json
+
+            extra = _json.loads(extra or "{}")
+        previous = (extra.get("prod_push") or {}).get("domains") or {}
+
+    auth_files = auth_exchange.find_grok2api_auth_files(
+        original_email, config.get("grok2api_auth_dir", "")
+    )
 
     staging_node_cache: Dict[str, Dict[str, str]] = {}
     prod_node_cache: Dict[str, Tuple[str, List[Dict[str, Any]]]] = {}

@@ -1486,6 +1486,22 @@ def find_grok2api_auth_files(
             if candidate.is_file():
                 found[provider] = candidate
                 break
+        if provider in found:
+            continue
+        # 大小写不敏感回退：webhook 链路会把 email 小写化，而文件名保留
+        # 注册时的原始大小写（如 OE8SCP0R22@outlook.com），ext4 上精确名会 miss。
+        folded = filename.casefold()
+        for root in roots:
+            try:
+                entries = list(root.iterdir())
+            except OSError:
+                continue
+            for entry in entries:
+                if entry.name.casefold() == folded and entry.is_file():
+                    found[provider] = entry
+                    break
+            if provider in found:
+                break
     return found
 
 
