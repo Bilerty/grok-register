@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import base64
 import hashlib
 import hmac
@@ -36,6 +37,9 @@ from backend.integrations.proxy import (
 )
 from backend.integrations import proxy_pool
 from backend.integrations import grokiq
+
+logger = logging.getLogger(__name__)
+from backend.integrations import prod_push
 from backend.shared.paths import DATA_ROOT, PROJECT_ROOT, STATIC_ROOT
 from backend.shared.version import current_version
 
@@ -112,6 +116,14 @@ CONFIG_PUBLIC_KEYS = (
     "grok2api_auto_import_build",
     "grok2api_auto_import_web",
     "grok2api_auto_import_console",
+    "prod_push_enabled",
+    "prod_grok2api_remote_url",
+    "prod_grok2api_remote_username",
+    "prod_grok2api_remote_password",
+    "prod_push_build",
+    "prod_push_web",
+    "prod_push_console",
+    "prod_push_egress_guard",
     "cpa_upload_enabled",
     "sub2api_enabled",
     "sub2api_remote_url",
@@ -143,6 +155,7 @@ SENSITIVE_HINT_KEYS = {
     "outlookemail_session_cookie",
     "cpa_management_key",
     "grok2api_remote_password",
+    "prod_grok2api_remote_password",
     "sub2api_api_key",
     "grokiq_webhook_token",
     "mailnest_api_key",
@@ -510,6 +523,8 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
     gr.save_config()
     if any(key.startswith("grokiq_webhook_") for key in changed):
         grokiq.grokiq_notifier.wake()
+    if any(key.startswith("prod_push") or key.startswith("prod_grok2api") for key in changed):
+        prod_push.prod_push_worker.wake()
     return {"changed": changed, "config": _public_config(gr.config)}
 
 
@@ -573,6 +588,8 @@ def _serialize_record(
         "delivered_at": str(delivery.get("delivered_at") or ""),
         "last_error": str(delivery.get("last_error") or ""),
     }
+    prod_push = extra_data.get("prod_push")
+    item["prod_push"] = prod_push if isinstance(prod_push, dict) else None
     return item
 
 
@@ -856,6 +873,10 @@ def create_app() -> FastAPI:
                 repository,
                 lambda: dict(gr.config),
             )
+            prod_push.prod_push_worker.start(
+                repository,
+                lambda: dict(gr.config),
+            )
         except Exception as exc:
             print(f"[web] 初始化 SQLite 失败: {exc}", flush=True)
         update_service.start()
@@ -864,6 +885,7 @@ def create_app() -> FastAPI:
     def _shutdown() -> None:
         update_service.stop()
         grokiq.grokiq_notifier.stop()
+        prod_push.prod_push_worker.stop()
 
     @app.get("/api/health")
     def api_health() -> Dict[str, Any]:
@@ -889,6 +911,21 @@ def create_app() -> FastAPI:
         stored = _gr().get_registration_repository().save_grokiq_result(payload)
         if stored is None:
             raise HTTPException(status_code=404, detail="未找到对应注册记录")
+        # fork 定制：回调判定未降智 → 入队生产号池推送（后台 worker 异步执行）
+        pushable, reason = prod_push.is_pushable_grokiq_result(payload)
+        if pushable:
+            try:
+                prod_push.prod_push_worker.enqueue(
+                    int(stored.get("id") or 0), email
+                )
+            except Exception as exc:
+                logger.warning("[ProdPush] 入队失败 registration=%s: %s", stored.get("id"), exc)
+        else:
+            logger.info(
+                "[ProdPush] 回调不满足推送条件 registration=%s: %s",
+                stored.get("id"),
+                reason,
+            )
         return {"ok": True, "account_id": int(stored.get("id") or 0)}
 
     @app.get("/api/system/version")

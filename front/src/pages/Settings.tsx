@@ -823,6 +823,62 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                   />
                 </CardContent>
               </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>正式号池推送</CardTitle>
+                  <CardDescription>
+                    收到 GrokIQ 回调且确认未降智（探针通过、未降智、未隔离）时，自动把账号推送到正式 grok2api 号池，并按 SID 匹配绑定同源出口代理。
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="grid gap-4">
+                  <ToggleRow
+                    title="回调未降智时推送正式号池"
+                    description="关闭时收到回调不做任何额外操作"
+                    checked={!!config.prod_push_enabled}
+                    onCheckedChange={(value) => setField("prod_push_enabled", value)}
+                  />
+                  <ConfigField
+                    {...fieldState}
+                    label="正式号池远程 API 地址"
+                    field="prod_grok2api_remote_url"
+                    placeholder="https://prod.example.com"
+                    helper="填写正式 grok2api 站点根地址，不要附加 /api/admin/v1"
+                  />
+                  <ConfigField {...fieldState} label="管理员账号" field="prod_grok2api_remote_username" />
+                  <ConfigField {...fieldState} label="管理员密码" field="prod_grok2api_remote_password" type="password" />
+                  <div className="grid gap-3">
+                    <ToggleRow
+                      title="推送 Build"
+                      description="与上方「导入 Build」联动，目标未推送时不可开启"
+                      checked={config.prod_push_build !== false}
+                      onCheckedChange={(value) => setField("prod_push_build", value)}
+                      disabled={!config.prod_push_enabled || !config.grok2api_auto_import || config.grok2api_auto_import_build === false}
+                    />
+                    <ToggleRow
+                      title="推送 Web"
+                      description="与「导入 Web」联动"
+                      checked={!!config.prod_push_web}
+                      onCheckedChange={(value) => setField("prod_push_web", value)}
+                      disabled={!config.prod_push_enabled || !config.grok2api_auto_import || !config.grok2api_auto_import_web}
+                    />
+                    <ToggleRow
+                      title="推送 Console"
+                      description="与「导入 Console」联动"
+                      checked={!!config.prod_push_console}
+                      onCheckedChange={(value) => setField("prod_push_console", value)}
+                      disabled={!config.prod_push_enabled || !config.grok2api_auto_import || !config.grok2api_auto_import_console}
+                    />
+                  </div>
+                  <ToggleRow
+                    title="代理出口保护"
+                    description="推送前按 staging 出口节点的 SID（名称末段）在生产号池匹配同源节点绑定；未匹配则随机绑定可用节点"
+                    checked={config.prod_push_egress_guard !== false}
+                    onCheckedChange={(value) => setField("prod_push_egress_guard", value)}
+                    disabled={!config.prod_push_enabled}
+                  />
+                </CardContent>
+              </Card>
             </div>
             ) : null}
 

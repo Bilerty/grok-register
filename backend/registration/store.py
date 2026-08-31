@@ -60,6 +60,7 @@ RESULT_COLUMNS = (
 )
 
 SQLITE_IN_BATCH_SIZE = 900
+PROD_PUSH_MAX_ATTEMPTS = 5
 
 
 class RegistrationRepository:
@@ -281,6 +282,31 @@ class RegistrationRepository:
                 """
             )
             conn.execute("PRAGMA user_version = 8")
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS prod_push_outbox (
+                    event_id TEXT PRIMARY KEY,
+                    registration_id INTEGER NOT NULL UNIQUE,
+                    email TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at REAL NOT NULL DEFAULT 0,
+                    last_attempt_at TEXT NOT NULL DEFAULT '',
+                    finished_at TEXT NOT NULL DEFAULT '',
+                    last_error TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_prod_push_outbox_due
+                    ON prod_push_outbox(status, next_attempt_at)
+                """
+            )
+            conn.execute("PRAGMA user_version = 9")
 
     def add_result(self, record: Dict[str, Any]) -> int:
         now = self.now_text()
@@ -509,6 +535,165 @@ class RegistrationRepository:
                     str(event_id),
                 ),
             )
+
+    def enqueue_prod_push(self, registration_id: int | str, email: str) -> Dict[str, Any]:
+        """把一条"待推送生产号池"任务写入持久队列（按注册记录幂等）。"""
+        normalized_id = int(registration_id)
+        if normalized_id <= 0:
+            raise ValueError("registration_id 必须是正整数")
+        normalized_email = str(email or "").strip().lower()
+        if "@" not in normalized_email:
+            raise ValueError("生产推送缺少有效邮箱")
+        event_id = f"registration:{normalized_id}:prod-push"
+        now_text = self.now_text()
+        now_epoch = _datetime.datetime.now().timestamp()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO prod_push_outbox (
+                    event_id, registration_id, email, status, attempts,
+                    next_attempt_at, created_at, updated_at
+                ) VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)
+                ON CONFLICT(event_id) DO UPDATE SET
+                    status = 'pending', next_attempt_at = ?, updated_at = ?
+                """,
+                (
+                    event_id,
+                    normalized_id,
+                    normalized_email,
+                    now_epoch,
+                    now_text,
+                    now_text,
+                    now_epoch,
+                    now_text,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM prod_push_outbox WHERE event_id = ?",
+                (event_id,),
+            ).fetchone()
+        return dict(row) if row is not None else {}
+
+    def recover_prod_push(self) -> int:
+        """启动时把卡在 delivering 的推送任务复位为 pending。"""
+        now_text = self.now_text()
+        now_epoch = _datetime.datetime.now().timestamp()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE prod_push_outbox
+                SET status = 'pending', next_attempt_at = ?, updated_at = ?
+                WHERE status = 'delivering'
+                """,
+                (now_epoch, now_text),
+            )
+            return int(cursor.rowcount or 0)
+
+    def claim_prod_push(self) -> Dict[str, Any] | None:
+        now_epoch = _datetime.datetime.now().timestamp()
+        now_text = self.now_text()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT *
+                FROM prod_push_outbox
+                WHERE status = 'pending' AND next_attempt_at <= ?
+                ORDER BY next_attempt_at ASC, created_at ASC
+                LIMIT 1
+                """,
+                (now_epoch,),
+            ).fetchone()
+            if row is None:
+                return None
+            cursor = conn.execute(
+                """
+                UPDATE prod_push_outbox
+                SET status = 'delivering', attempts = attempts + 1,
+                    last_attempt_at = ?, updated_at = ?
+                WHERE event_id = ? AND status = 'pending'
+                """,
+                (now_text, now_text, row["event_id"]),
+            )
+            if not cursor.rowcount:
+                return None
+            claimed = conn.execute(
+                "SELECT * FROM prod_push_outbox WHERE event_id = ?",
+                (row["event_id"],),
+            ).fetchone()
+        return dict(claimed) if claimed is not None else None
+
+    def finish_prod_push(self, event_id: str, *, error: str = "", delivered: bool) -> None:
+        """推送终态：delivered=成功落库；失败时按退避复位 pending（超限置 failed）。"""
+        now_text = self.now_text()
+        with self._connect() as conn:
+            if delivered:
+                conn.execute(
+                    """
+                    UPDATE prod_push_outbox
+                    SET status = 'delivered', finished_at = ?, last_error = '', updated_at = ?
+                    WHERE event_id = ?
+                    """,
+                    (now_text, now_text, str(event_id)),
+                )
+                return
+            row = conn.execute(
+                "SELECT attempts FROM prod_push_outbox WHERE event_id = ?",
+                (str(event_id),),
+            ).fetchone()
+            attempts = int(row["attempts"] or 0) if row is not None else 0
+            if attempts >= PROD_PUSH_MAX_ATTEMPTS:
+                conn.execute(
+                    """
+                    UPDATE prod_push_outbox
+                    SET status = 'failed', finished_at = ?, last_error = ?, updated_at = ?
+                    WHERE event_id = ?
+                    """,
+                    (now_text, str(error or "")[:4000], now_text, str(event_id)),
+                )
+                return
+            next_attempt = _datetime.datetime.now().timestamp() + min(
+                300.0, 2.0 ** max(attempts, 1)
+            )
+            conn.execute(
+                """
+                UPDATE prod_push_outbox
+                SET status = 'pending', next_attempt_at = ?, last_error = ?, updated_at = ?
+                WHERE event_id = ? AND status != 'delivered'
+                """,
+                (next_attempt, str(error or "")[:4000], now_text, str(event_id)),
+            )
+
+    def save_prod_push_result(self, registration_id: int | str, result: Dict[str, Any]) -> Dict[str, Any] | None:
+        """把生产推送结果合并进注册记录 extra_json.prod_push。"""
+        normalized_id = int(registration_id or 0)
+        if normalized_id <= 0:
+            return None
+        data = dict(result or {})
+        data["updated_at"] = self.now_text()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id, extra_json FROM registration_results WHERE id = ?",
+                (normalized_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            try:
+                extra = json.loads(str(row["extra_json"] or "{}"))
+                if not isinstance(extra, dict):
+                    extra = {}
+            except (TypeError, ValueError, json.JSONDecodeError):
+                extra = {}
+            extra["prod_push"] = data
+            conn.execute(
+                "UPDATE registration_results SET extra_json = ? WHERE id = ?",
+                (json.dumps(extra, ensure_ascii=False, sort_keys=True), int(row["id"])),
+            )
+            refreshed = conn.execute(
+                "SELECT * FROM registration_results WHERE id = ?",
+                (int(row["id"]),),
+            ).fetchone()
+        return dict(refreshed) if refreshed is not None else None
 
     def grokiq_deliveries(
         self, registration_ids: Iterable[int | str]
