@@ -247,11 +247,48 @@ class HealthTests(unittest.TestCase):
     def test_add_remove_clear(self):
         pool = make_pool()
         result = pool.add_urls(["http://d:4", "http://a:1", "not a url"])
-        self.assertEqual(result["added"], ["http://d:4"])
+        # 无名称条目自动命名：批次哈希-两位序号
+        self.assertEqual(len(result["added"]), 1)
+        name, url = pp.parse_proxy_entry(result["added"][0])
+        self.assertEqual(url, "http://d:4")
+        self.assertRegex(name, r"^[0-9a-f]{6}-01$")
         self.assertEqual(result["invalid"], ["not a url"])
-        self.assertTrue(pool.remove_url("http://d:4"))
+        self.assertTrue(pool.remove_url(result["added"][0]))
         self.assertGreaterEqual(pool.clear(), 3)
         self.assertTrue(pool.empty())
+
+    def test_add_urls_auto_names_share_batch_hash(self):
+        pool = make_pool()
+        result = pool.add_urls(["http://d:4", "http://e:5"])
+        names = [pp.parse_proxy_entry(entry)[0] for entry in result["added"]]
+        self.assertEqual(names[0].split("-")[0], names[1].split("-")[0])
+        self.assertTrue(names[0].endswith("-01"))
+        self.assertTrue(names[1].endswith("-02"))
+
+    def test_add_urls_named_entry_keeps_name_and_dedupes_by_url(self):
+        pool = make_pool()
+        result = pool.add_urls(["hk-office-01 | http://d:4"])
+        self.assertEqual(result["added"], ["hk-office-01 | http://d:4"])
+        # 同一 URL 再次导入（无论是否带名称）按 URL 部分查重跳过
+        again = pool.add_urls(["http://d:4", "hk-office-01 | http://d:4"])
+        self.assertEqual(again["added"], [])
+        self.assertEqual(pool.urls[-1], "hk-office-01 | http://d:4")
+        self.assertEqual(len(pool.urls), 4)
+
+    def test_named_entry_resolution_uses_url_part(self):
+        pool = make_pool(
+            urls=["hk-office-01 | http://a:1", "us-02 | http://b:2"],
+            sticky_scope="task",
+        )
+        self.assertEqual(pool.resolve("w1"), "http://a:1")
+        self.assertEqual(pool.resolve("w1"), "http://a:1")
+        self.assertEqual(pool.resolve_template("w1"), "hk-office-01 | http://a:1")
+
+    def test_invalid_named_entry_is_rejected(self):
+        pool = make_pool()
+        result = pool.add_urls(["hk-office-01 | ftp://bad:2"])
+        self.assertEqual(result["added"], [])
+        self.assertEqual(len(result["invalid"]), 1)
 
 
 class TemplateTests(unittest.TestCase):
@@ -393,6 +430,112 @@ class PersistenceHardeningTests(unittest.TestCase):
             self.assertEqual(len(data), 3)
             for state in data.values():
                 self.assertIn(state["status"], ("cooldown", "healthy"))
+
+
+class AsnTests(unittest.TestCase):
+    def _probe_factory(self, ips):
+        state = {"index": 0}
+
+        def probe(url):
+            ip = ips[min(state["index"], len(ips) - 1)]
+            state["index"] += 1
+            return {"ok": True, "egress_ip": ip, "latency_ms": 5, "error": ""}
+
+        return probe
+
+    def test_single_probe_adds_asn_and_overwrites_on_rotation(self):
+        pool = make_pool(
+            urls=["http://a:1"],
+            probe=self._probe_factory(["1.1.1.1", "2.2.2.2"]),
+            asn_lookup=lambda ip: f"AS1 {ip}",
+        )
+        pool.probe_node("http://a:1")
+        state = pool._nodes["http://a:1"]
+        self.assertEqual(state.asn, "AS1 1.1.1.1")
+        self.assertEqual(state.asn_ip, "1.1.1.1")
+        pool.probe_node("http://a:1")
+        state = pool._nodes["http://a:1"]
+        self.assertEqual(state.egress_ip, "2.2.2.2")
+        self.assertEqual(state.asn, "AS1 2.2.2.2")
+        self.assertEqual(state.asn_ip, "2.2.2.2")
+
+    def test_batch_probe_does_not_touch_asn(self):
+        calls = []
+
+        def asn_lookup(ip):
+            calls.append(ip)
+            return f"AS1 {ip}"
+
+        pool = make_pool(
+            urls=["http://a:1"],
+            probe=self._probe_factory(["1.1.1.1", "3.3.3.3"]),
+            asn_lookup=asn_lookup,
+        )
+        pool.probe_node("http://a:1")
+        self.assertEqual(pool._nodes["http://a:1"].asn, "AS1 1.1.1.1")
+        pool.probe_all()
+        state = pool._nodes["http://a:1"]
+        self.assertEqual(state.egress_ip, "3.3.3.3")
+        # 批量探测不触发 ASN 查询，旧 ASN 保留暂存
+        self.assertEqual(state.asn, "AS1 1.1.1.1")
+        self.assertEqual(state.asn_ip, "1.1.1.1")
+        self.assertEqual(calls, ["1.1.1.1"])
+
+    def test_pick_probe_queries_asn(self):
+        calls = []
+
+        def asn_lookup(ip):
+            calls.append(ip)
+            return "AS2"
+
+        pool = make_pool(
+            urls=["http://a:1"],
+            probe=self._probe_factory(["1.1.1.1"]),
+            sticky_scope="task",
+            asn_lookup=asn_lookup,
+        )
+        self.assertEqual(pool.resolve("w1"), "http://a:1")
+        self.assertEqual(calls, ["1.1.1.1"])
+        self.assertEqual(pool._nodes["http://a:1"].asn, "AS2")
+
+    def test_ensure_asn_refreshes_only_when_egress_rotated(self):
+        calls = []
+
+        def asn_lookup(ip):
+            calls.append(ip)
+            return f"AS1 {ip}"
+
+        pool = make_pool(urls=["http://a:1"], asn_lookup=asn_lookup)
+        pool.report_success("http://a:1", egress_ip="1.1.1.1")
+        pool.ensure_asn("http://a:1")
+        self.assertEqual(pool._nodes["http://a:1"].asn, "AS1 1.1.1.1")
+        pool.ensure_asn("http://a:1")
+        self.assertEqual(calls, ["1.1.1.1"])
+        pool.report_success("http://a:1", egress_ip="2.2.2.2")
+        pool.ensure_asn("http://a:1")
+        self.assertEqual(calls, ["1.1.1.1", "2.2.2.2"])
+        self.assertEqual(pool._nodes["http://a:1"].asn, "AS1 2.2.2.2")
+
+    def test_state_file_persists_asn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = os.path.join(tmp, "state.json")
+            pool = make_pool(state_file=state_file)
+            pool.report_success("http://a:1", egress_ip="1.1.1.1")
+            pool._nodes["http://a:1"].asn = "AS1"
+            pool._nodes["http://a:1"].asn_ip = "1.1.1.1"
+            pool._dirty = True
+            pool._persist_state()
+            restored = make_pool(state_file=state_file)
+            self.assertEqual(restored._nodes["http://a:1"].asn, "AS1")
+            self.assertEqual(restored._nodes["http://a:1"].asn_ip, "1.1.1.1")
+
+    def test_node_list_exposes_name_and_asn(self):
+        pool = make_pool(urls=["hk-01 | http://a:1"], asn_lookup=None)
+        pool.report_success("hk-01 | http://a:1", egress_ip="1.1.1.1")
+        pool._nodes["hk-01 | http://a:1"].asn = "AS1"
+        nodes = pool.node_list()
+        self.assertEqual(nodes[0]["name"], "hk-01")
+        self.assertEqual(nodes[0]["asn"], "AS1")
 
 
 if __name__ == "__main__":

@@ -226,10 +226,13 @@ export function ProxyPoolPage() {
           <Textarea
             id="proxy-pool-import"
             className="mt-2 min-h-32 font-mono text-xs"
-            placeholder={"http://127.0.0.1:7890\nhttp://user:pass@gw.example.com:8000"}
+            placeholder={"hk-office-01 | http://user:pass@gw.vendor.com:4000\nhttp://127.0.0.1:7890"}
             value={importText}
             onChange={(event) => setImportText(event.target.value)}
           />
+          <p className="mt-2 text-xs leading-5 text-muted-foreground">
+            支持 `名称 | 代理URL`（自动去除前后空格）或纯 URL；无名称条目按本批次哈希+顺序编号自动命名。
+          </p>
           <div className="mt-3 flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setImportOpen(false)}>
               取消
@@ -361,13 +364,15 @@ export function ProxyPoolPage() {
         {nodes.length ? (
           <>
             <div className="hidden overflow-x-auto md:block">
-              <table className="w-full min-w-[820px] border-collapse text-left text-sm">
+              <table className="w-full min-w-[1080px] border-collapse text-left text-sm">
                 <thead className="border-b border-slate-200 bg-slate-50/95 text-xs font-medium text-muted-foreground">
                   <tr>
+                    <th className="w-[150px] px-3 py-2">名称</th>
                     <th className="px-4 py-2">节点</th>
                     <th className="w-[100px] px-3 py-2">状态</th>
-                    <th className="w-[140px] px-3 py-2">出口 IP</th>
-                    <th className="w-[88px] px-3 py-2">延迟</th>
+                    <th className="w-[130px] px-3 py-2">出口 IP</th>
+                    <th className="w-[150px] px-3 py-2">ASN</th>
+                    <th className="w-[80px] px-3 py-2">延迟</th>
                     <th className="w-[160px] px-3 py-2">最近使用</th>
                     <th className="w-[96px] px-3 py-2 text-center">操作</th>
                   </tr>
@@ -377,6 +382,9 @@ export function ProxyPoolPage() {
                     const meta = STATUS_META[node.status] || STATUS_META.healthy;
                     return (
                       <tr key={node.key} className="align-top hover:bg-slate-50/70">
+                        <td className="border-b border-slate-100 px-3 py-3 text-sm font-medium text-foreground">
+                          <div className="break-all">{node.name || "—"}</div>
+                        </td>
                         <td className="border-b border-slate-100 px-4 py-3">
                           <div className="break-all font-mono text-xs text-foreground">{node.url || "（空）"}</div>
                           {node.last_error ? (
@@ -390,6 +398,9 @@ export function ProxyPoolPage() {
                           ) : null}
                         </td>
                         <td className="border-b border-slate-100 px-3 py-3 font-mono text-xs">{node.egress_ip || "—"}</td>
+                        <td className="border-b border-slate-100 px-3 py-3 font-mono text-xs" title={node.asn || ""}>
+                          {node.asn || <span className="text-muted-foreground">—</span>}
+                        </td>
                         <td className="border-b border-slate-100 px-3 py-3 text-xs">
                           {node.latency_ms != null ? `${node.latency_ms} ms` : "—"}
                         </td>
@@ -443,11 +454,15 @@ export function ProxyPoolPage() {
                 return (
                   <article key={node.key} className="space-y-2 p-4">
                     <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0 break-all font-mono text-xs text-foreground">{node.url || "（空）"}</div>
+                      <div className="min-w-0">
+                        <div className="break-all text-sm font-medium text-foreground">{node.name || "（未命名）"}</div>
+                        <div className="mt-0.5 break-all font-mono text-xs text-muted-foreground">{node.url || "（空）"}</div>
+                      </div>
                       <Badge variant={meta.variant}>{meta.label}</Badge>
                     </div>
                     <div className="text-xs leading-5 text-muted-foreground">
                       <div>出口 IP {node.egress_ip || "—"}</div>
+                      <div>ASN {node.asn || "—"}</div>
                       <div>
                         延迟 {node.latency_ms != null ? `${node.latency_ms} ms` : "—"} · 最近 {formatTime(node.last_used_at)}
                       </div>

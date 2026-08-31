@@ -127,11 +127,13 @@ export type ProxyPoolNodeStatus = "healthy" | "unreachable" | "cooldown" | "flag
 
 export type ProxyPoolNode = {
   key: string;
+  name: string;
   url: string;
   status: ProxyPoolNodeStatus;
   cooldown_remaining: number;
   last_used_at: number;
   egress_ip: string;
+  asn: string;
   latency_ms: number | null;
   last_error: string;
   probe_at: number;

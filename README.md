@@ -222,14 +222,14 @@ Windows 启动：
 | `email_provider` | 邮箱服务商 |
 | `register_count` | 注册数量 |
 | `register_workers` | 并发数量，默认 1 |
-| `proxy` | 注册和 OAuth 请求使用的 HTTP(S) 代理；支持 `http://host:port` 和 `http://user:password@host:port`，凭据中的特殊字符需使用 URL 百分号编码。注册风控会记录浏览器识别到的出口 IP；下次若仍是该 IP，会重启浏览器换出口后再注册。风控名单在「账号中心 → 出口 IP 风控」查看，单账号出口 IP 在「账号中心 → 账号管理 → 查看」详情中。多行内容（每行一条）即代理池；配合下方 `proxy_*` 配置使用 |
+| `proxy` | 注册和 OAuth 请求使用的 HTTP(S) 代理；支持 `http://host:port` 和 `http://user:password@host:port`，凭据中的特殊字符需使用 URL 百分号编码。代理池条目支持 `名称 \| 代理URL`（如 `hk-office-01 \| http://user:pass@gw:4000`）或纯 URL，无名称条目导入时按批次哈希+顺序编号自动命名。注册风控会记录浏览器识别到的出口 IP；下次若仍是该 IP，会重启浏览器换出口后再注册。风控名单在「账号中心 → 出口 IP 风控」查看，单账号出口 IP 在「账号中心 → 账号管理 → 查看」详情中。多行内容（每行一条）即代理池；配合下方 `proxy_*` 配置使用 |
 | `proxy_mode` | `static` 单代理 / `pool` 代理池 / `sticky_template` 粘性模板（含 `{account}`、`{email}` 占位符）；留空按内容自动识别 |
 | `proxy_selection` | 池选择策略：`round_robin`（默认）/ `random` / `least_used` |
 | `proxy_sticky_scope` | 粘性范围：`task`（默认，注册 worker 绑定节点，浏览器与 HTTP 同出口）/ `none`（每次选择可能变化） |
 | `proxy_file` | 池文件路径，每行一条代理，与 `proxy` 多行内容合并（pool 模式） |
 | `proxy_username` / `proxy_password` | 池级凭据；池条目自带认证时以条目为准 |
 | `proxy_cooldown_seconds` | 注册风控后节点冷却秒数，默认 600；0 表示不冷却 |
-| `proxy_probe_once_per_batch` | 批次开始前统一预探测池节点（默认开启）；也可在「代理池」页手动探测 |
+| `proxy_probe_once_per_batch` | 批次开始前统一预探测池节点（默认开启）；也可在「代理池」页手动探测。手动探测与绑定补查会顺带查询出口 IP 的 ASN（ip-api.com 免费渠道，带缓存与限速），批量预探测为避免触发免费额度限制不做 ASN；ASN 随节点状态暂存，出口 IP 轮转后自动刷新覆盖 |
 | `browser_engine` | 浏览器后端：`camoufox`（默认）或 `cloakbrowser` |
 | `browser_headless` | 本机无头模式；Docker 中强制关闭 |
 | `browser_low_traffic_mode` | 低流量注册模式，默认开启；复用静态资源缓存并跳过非注册必需资源 |
@@ -265,6 +265,12 @@ GrokIQ 检测完成后会发送回调通知 `POST /api/integrations/grokiq/notif
 
 - **出口统一**：注册 worker 启动时从池中绑定一个健康节点，此后该 worker 的浏览器与
   xAI/OAuth/CPA 等 HTTP 请求全部经由 `get_proxies()` 使用同一出口，避免 IP 混用。
+- **节点命名**：条目支持 `名称 | 代理URL`（名称去除前后空格）与纯 URL 两种写法；
+  无名称条目在导入时按「本批次固定哈希-两位顺序编号」自动命名（如 `9f3ab2-01`），
+  名称写入配置持久化。同一 URL 重复导入按 URL 部分查重，不会产生重名节点。
+- **ASN 识别**：单节点手动探测、选中探测与任务绑定补查会通过 ip-api.com 免费渠道
+  查询出口 IP 的 ASN 并随节点状态暂存（面板显示）；出口 IP 轮转（动态住宅出口）后
+  下次绑定自动补查覆盖。批量预探测不做 ASN（受免费额度速率限制）。
 - **健康管理**：节点状态为 `healthy / unreachable / cooldown / flagged`。批次开始前统一
   预探测（记录出口 IP 与延迟）；注册触发风控时当前节点进入冷却；节点探测出口 IP 命中
   上游「出口 IP 风控」名单时自动隔离，探测恢复或手动复位后重新可用。
