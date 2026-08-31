@@ -100,5 +100,61 @@ class HttpProxyParsingTests(unittest.TestCase):
         self.assertNotIn("raw/secret", malformed)
 
 
+class SocksProxySchemeTests(unittest.TestCase):
+    """socks5 / socks5h 协议支持：校验、脱敏、浏览器 proxy dict。"""
+
+    def test_socks_urls_pass_validation(self):
+        for url in (
+            "socks5://gw.example.com:1080",
+            "socks5h://user:pass@gw.example.com:1080",
+            "socks5h://user%40mail:p%40ss@gw.example.com:1080",
+        ):
+            self.assertEqual(validate_http_proxy_url(url), url)
+
+    def test_unsupported_schemes_still_rejected(self):
+        for url in ("ftp://gw:21", "socks4://gw:1080", "socks5://gw:1080/path"):
+            with self.assertRaises(ValueError):
+                validate_http_proxy_url(url)
+
+    def test_socks_credentials_are_redacted(self):
+        proxy = "socks5h://user%40mail:p%40ss@gw.example.com:1080"
+        self.assertEqual(
+            redact_proxy_url(proxy),
+            "socks5h://***:***@gw.example.com:1080",
+        )
+
+    def test_browser_proxy_dict_for_socks_splits_credentials(self):
+        from backend.automation.session import _build_camoufox_proxy
+
+        result = _build_camoufox_proxy(
+            "socks5h://user%40mail:p%40ss@gw.example.com:1080"
+        )
+        self.assertEqual(result["server"], "socks5h://gw.example.com:1080")
+        self.assertEqual(result["username"], "user@mail")
+        self.assertEqual(result["password"], "p@ss")
+
+    def test_browser_proxy_dict_for_socks_without_auth(self):
+        from backend.automation.session import _build_camoufox_proxy
+
+        self.assertEqual(
+            _build_camoufox_proxy("socks5://gw.example.com:1080"),
+            {"server": "socks5://gw.example.com:1080"},
+        )
+
+    def test_socks_entry_accepted_by_proxy_pool(self):
+        from backend.integrations import proxy_pool as pp
+
+        config = {
+            "proxy": "hk-socks | socks5h://user:pass@gw.example.com:1080",
+            "proxy_mode": "pool",
+        }
+        pool = pp.build_pool_from_config(lambda key, default=None: config.get(key, default))
+        self.assertEqual(pool.urls, ["hk-socks | socks5h://user:pass@gw.example.com:1080"])
+        self.assertEqual(
+            pool.render(pool.urls[0]),
+            "socks5h://user:pass@gw.example.com:1080",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

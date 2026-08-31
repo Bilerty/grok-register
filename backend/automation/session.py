@@ -18,7 +18,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Callable, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import asyncio
 from greenlet import greenlet
@@ -33,7 +33,11 @@ from playwright._impl._transport import PipeTransport as _PwPipeTransport
 from playwright.sync_api._generated import Playwright as _SyncPlaywright
 
 from backend.automation.page_adapter import BrowserAdapter, PageAdapter
-from backend.integrations.proxy import HTTP_PROXY_SCHEMES, parse_http_proxy_url
+from backend.integrations.proxy import (
+    HTTP_PROXY_SCHEMES,
+    SOCKS_PROXY_SCHEMES,
+    parse_http_proxy_url,
+)
 
 
 class IsolatedCamoufox(_Camoufox):
@@ -847,11 +851,25 @@ def _kill_local_playwright_drivers(log_callback=None) -> int:
 
 
 def _build_camoufox_proxy(proxy_str: str) -> dict:
-    """把代理 URL 转换为两个浏览器后端共用的 Playwright proxy dict。"""
+    """把代理 URL 转换为两个浏览器后端共用的 Playwright proxy dict。
+
+    http/https 走完整解析（含 percent 解码）；socks5/socks5h 保留 scheme
+    透传给浏览器内核（原生支持），凭据 percent 解码后拆分传入。
+    """
     proxy_str = proxy_str.strip()
     if not proxy_str:
         return {}
     parsed = urlparse(proxy_str)
+    if parsed.scheme.lower() in SOCKS_PROXY_SCHEMES:
+        server = f"{parsed.scheme.lower()}://{parsed.hostname or ''}"
+        if parsed.port:
+            server += f":{parsed.port}"
+        result: dict = {"server": server}
+        if parsed.username:
+            result["username"] = unquote(parsed.username)
+        if parsed.password:
+            result["password"] = unquote(parsed.password)
+        return result
     if parsed.scheme.lower() in HTTP_PROXY_SCHEMES:
         return parse_http_proxy_url(proxy_str)
     if parsed.scheme and parsed.hostname:
