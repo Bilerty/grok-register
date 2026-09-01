@@ -1064,6 +1064,18 @@ def _configure_proxy_pool():
     )
 
 
+def _rotate_task_proxy(previous_scope: str, attempt_tag: str) -> None:
+    """每个账号轮换一个新出口：先绑新 scope 成功后再释放旧租约。
+
+    随机/轮询选择器在新 scope 上重新挑节点（自动避开 unhealthy/冷却）；
+    绑定失败（如池耗尽）时保留旧绑定继续，绝不退化为直连。
+    """
+    new_scope = f"{previous_scope}-{attempt_tag}"
+    _pp.bind_task(scope_key=new_scope)
+    if previous_scope:
+        _pp.get_pool().release(previous_scope)
+
+
 def _preflight_proxy_pool():
     """批次开始前统一探测池节点，避免注册过程中逐节点探测拖慢任务。
 
@@ -3393,12 +3405,15 @@ def run_registration(count):
                     nsfw_status = "未执行"
                     try:
                         try:
-                            if _pp.rebind_if_unhealthy():
-                                registration_log(
-                                    f"[W{wid + 1}] [*] 代理节点已切换，本次账号将使用新出口"
-                                )
+                            previous_scope = _pp.current_scope_key() or f"w{wid + 1}"
+                            _rotate_task_proxy(previous_scope, f"a{i + 1}")
+                            registration_log(
+                                f"[W{wid + 1}] [*] 已轮换新出口节点（每账号一次）"
+                            )
                         except Exception as pool_exc:
-                            registration_log(f"[W{wid + 1}] [!] 代理节点切换失败: {pool_exc}")
+                            registration_log(
+                                f"[W{wid + 1}] [!] 出口轮换失败，沿用当前出口: {pool_exc}"
+                            )
                         open_signup_page(
                             log_callback=lambda m: registration_log(f"[W{wid+1}] {m}"),
                             cancel_callback=controller.should_stop,
@@ -3687,10 +3702,11 @@ def run_registration(count):
             registration_log(f"--- 开始第 {i + 1}/{count} 个账号 ---")
             attempt_started_at = time.time()
             try:
-                if _pp.rebind_if_unhealthy():
-                    registration_log("[*] 代理节点已切换，本次账号将使用新出口")
+                previous_scope = _pp.current_scope_key() or "reg-1"
+                _rotate_task_proxy(previous_scope, f"a{i + 1}")
+                registration_log("[*] 已轮换新出口节点（每账号一次）")
             except Exception as pool_exc:
-                registration_log(f"[!] 代理节点切换失败: {pool_exc}")
+                registration_log(f"[!] 出口轮换失败，沿用当前出口: {pool_exc}")
             email = ""
             profile = {}
             sso = ""
