@@ -926,6 +926,26 @@ def create_app() -> FastAPI:
                 stored.get("id"),
                 reason,
             )
+            # fork 定制：非"正常"判定视为风控 → 冷却注册所用池节点 + 记录出口 IP 风控名单
+            try:
+                repository = _gr().get_registration_repository()
+                risk = prod_push.apply_risk_response(
+                    repository,
+                    payload,
+                    int(stored.get("id") or 0),
+                    email,
+                    dict(gr.config),
+                )
+                repository.save_risk_response(int(stored.get("id") or 0), risk)
+                logger.info(
+                    "[ProdPush] 风控后处理完成 registration=%s: %s",
+                    stored.get("id"),
+                    json.dumps(risk, ensure_ascii=False)[:300],
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[ProdPush] 风控后处理异常 registration=%s: %s", stored.get("id"), exc
+                )
         return {"ok": True, "account_id": int(stored.get("id") or 0)}
 
     @app.get("/api/system/version")

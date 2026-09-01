@@ -778,6 +778,13 @@ def persist_registration_result(
     # Sub2API 摘要结果放入 extra，便于后续详情页展示
     if detail.get("sub2api_remote_result") is not None:
         extra_data["sub2api_remote_result"] = detail.get("sub2api_remote_result")
+    # 注册时所用的代理池节点（条目原文 + 探测出口 IP），供 GrokIQ 风控回调冷却定位
+    pool_entry = _pp.current_raw_url()
+    if pool_entry:
+        extra_data["pool_node"] = {
+            "entry": pool_entry,
+            "egress_ip": _pp.current_node_exit_ip(),
+        }
     disable_detail = default_email_disable_detail(provider_name, detail)
     disable_detail.update(dict(email_disable_detail or {}))
     try:
