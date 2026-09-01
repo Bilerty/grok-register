@@ -25,6 +25,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from backend.integrations import auth_exchange
 from backend.integrations.grok2api_client import Grok2APIClient, Grok2APIImportError
+from backend.integrations.proxy import redact_proxy_text
+from backend.integrations.proxy_pool import MODE_POOL, get_pool, parse_proxy_entry
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +67,99 @@ def is_pushable_grokiq_result(payload: Dict[str, Any] | None) -> Tuple[bool, str
     if outcome != "passed":
         return False, f"探针未通过（probe_outcome={outcome or '空'}）"
     return True, ""
+
+
+def apply_risk_response(
+    repository: Any,
+    payload: Dict[str, Any] | None,
+    registration_id: int,
+    email: str,
+    config: Dict[str, Any],
+) -> Dict[str, Any]:
+    """GrokIQ 回调判定非"正常"时的风控后处理（fork 定制）。
+
+    定位口径：**注册该账号时实际使用的出口**（判定所用的 staging 探针出口
+    与注册出口是两个不同代理，不作匹配对象）。
+
+    1. 从注册记录读取当时绑定的代理池节点（extra.pool_node.entry）→
+       report_failure 冷却（后续注册不再选中该节点）
+    2. 把注册时浏览器实测的出口 IP（extra.exit_ip）记入"出口 IP 风控名单"
+       （之后注册遇同出口 IP 自动重启换出口）
+    3. 结果由调用方写入 extra_json.risk_response 留痕
+    全程不抛异常（失败记录到返回值的 error 字段）；历史账号无 pool_node
+    记录时仅执行出口 IP 部分。
+    """
+    data = payload or {}
+    verdict = str(data.get("verdict") or data.get("monitor_status") or "").strip()
+    reasons = data.get("risk_reasons") or []
+    reason_text = "；".join(str(r) for r in reasons)[:400] if isinstance(reasons, list) else str(reasons)[:400]
+
+    result: Dict[str, Any] = {
+        "status": "failed",
+        "verdict": verdict,
+        "pool_node": "",
+        "cooldown_applied": False,
+        "exit_ip": "",
+        "exit_ip_recorded": False,
+        "error": "",
+    }
+
+    try:
+        records = repository.get_results_by_ids([int(registration_id)])
+    except Exception as exc:
+        result["error"] = f"读取注册记录失败: {str(exc)[:200]}"
+        return result
+    if not records:
+        result["error"] = "未找到对应注册记录"
+        return result
+    record = records[0]
+    extra = record.get("extra") or record.get("extra_json") or {}
+    if isinstance(extra, str):
+        import json as _json
+
+        try:
+            extra = _json.loads(extra or "{}")
+        except ValueError:
+            extra = {}
+    if not isinstance(extra, dict):
+        extra = {}
+
+    # 1) 冷却注册时绑定的代理池节点（条目原文精确匹配，无需 SID）
+    pool_node = extra.get("pool_node") or {}
+    node_entry = str((pool_node or {}).get("entry") or "").strip()
+    if node_entry:
+        pool = get_pool()
+        if pool.mode == MODE_POOL and node_entry in pool.url_list():
+            pool.report_failure(
+                node_entry,
+                reason=f"GrokIQ 判定降智/风险: {verdict} {reason_text}"[:200],
+            )
+            result["cooldown_applied"] = True
+            result["pool_node"] = redact_proxy_text(node_entry)
+        else:
+            result["error"] = "该节点已不在本机代理池中（未冷却）"
+    else:
+        result["error"] = "注册记录缺少所用节点信息（历史账号），仅执行出口 IP 记录"
+
+    # 2) 注册时浏览器实测出口 IP 记入风控名单
+    exit_ip = str(extra.get("exit_ip") or "").strip()
+    result["exit_ip"] = exit_ip
+    if exit_ip:
+        recorded = repository.remember_flagged_exit_ip(
+            exit_ip,
+            email=email,
+            bot_flag_source=f"grokiq:{verdict or 'risk'}",
+            failure_reason=reason_text or f"GrokIQ 判定 {verdict}",
+        )
+        result["exit_ip_recorded"] = bool(recorded)
+    else:
+        result["error"] = (result["error"] + "；注册未记录出口 IP").lstrip("；")
+
+    if result["cooldown_applied"] or result["exit_ip_recorded"]:
+        result["status"] = "processed"
+    elif result["status"] != "failed":
+        result["status"] = "failed"
+    return result
 
 
 def selected_domains(config: Dict[str, Any]) -> Tuple[str, ...]:

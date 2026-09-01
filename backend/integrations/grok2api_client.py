@@ -374,6 +374,7 @@ class Grok2APIClient:
                         "name": str(item.get("name") or ""),
                         "enabled": bool(item.get("enabled")),
                         "proxy_configured": bool(item.get("proxyConfigured")),
+                        "exit_ip": str(item.get("exitIp") or ""),
                     }
                 )
             total = int(data.get("total") or 0)

@@ -695,6 +695,37 @@ class RegistrationRepository:
             ).fetchone()
         return dict(refreshed) if refreshed is not None else None
 
+    def save_risk_response(self, registration_id: int | str, result: Dict[str, Any]) -> Dict[str, Any] | None:
+        """把 GrokIQ 风控回调的后处理结果合并进注册记录 extra_json.risk_response。"""
+        normalized_id = int(registration_id or 0)
+        if normalized_id <= 0:
+            return None
+        data = dict(result or {})
+        data["updated_at"] = self.now_text()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id, extra_json FROM registration_results WHERE id = ?",
+                (normalized_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            try:
+                extra = json.loads(str(row["extra_json"] or "{}"))
+                if not isinstance(extra, dict):
+                    extra = {}
+            except (TypeError, ValueError, json.JSONDecodeError):
+                extra = {}
+            extra["risk_response"] = data
+            conn.execute(
+                "UPDATE registration_results SET extra_json = ? WHERE id = ?",
+                (json.dumps(extra, ensure_ascii=False, sort_keys=True), int(row["id"])),
+            )
+            refreshed = conn.execute(
+                "SELECT * FROM registration_results WHERE id = ?",
+                (int(row["id"]),),
+            ).fetchone()
+        return dict(refreshed) if refreshed is not None else None
+
     def grokiq_deliveries(
         self, registration_ids: Iterable[int | str]
     ) -> Dict[int, Dict[str, Any]]:

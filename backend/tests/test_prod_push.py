@@ -13,6 +13,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from backend.integrations import prod_push as pp
+from backend.integrations import proxy_pool
 from backend.integrations.grok2api_client import Grok2APIClient
 from backend.registration.store import RegistrationRepository
 
@@ -309,6 +310,80 @@ class ExecuteProdPushTests(unittest.TestCase):
             self.assertEqual(result["status"], "skipped")
             result = pp.execute_prod_push(repo, record_id, "a@b.com", self._config(prod_grok2api_remote_password=""))
             self.assertEqual(result["status"], "skipped")
+
+
+def _make_test_pool(**kwargs):
+    defaults = dict(
+        mode="pool",
+        urls=["hk-01 | http://a:1", "us-02 | http://b:2"],
+        selection="round_robin",
+        sticky_scope="none",
+        cooldown_seconds=600,
+    )
+    defaults.update(kwargs)
+    return proxy_pool.ProxyPool(**defaults)
+
+
+class RiskResponseTests(unittest.TestCase):
+    def _repo_with_record(self, tmp, extra):
+        repo = RegistrationRepository(os.path.join(tmp, "rr.sqlite3"))
+        record_id = repo.add_result(
+            {"batch_id": "b", "email": "victim@example.com", "status": "success", "success": True, "extra": extra}
+        )
+        return repo, record_id
+
+    def _payload(self):
+        return {
+            "degraded": True,
+            "verdict": "degraded",
+            "monitor_status": "high_risk",
+            "risk_reasons": ["连续降智 3 次"],
+        }
+
+    def test_cooldown_pool_node_and_record_exit_ip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pool = _make_test_pool(sticky_scope="task")
+            proxy_pool.configure_proxy_pool(lambda: pool, lambda: ("sig",))
+            repo, record_id = self._repo_with_record(
+                tmp,
+                {
+                    "exit_ip": "203.0.113.7",
+                    "pool_node": {"entry": "hk-01 | http://a:1", "egress_ip": "203.0.113.7"},
+                },
+            )
+            result = pp.apply_risk_response(
+                repo, self._payload(), record_id, "victim@example.com", {}
+            )
+            self.assertEqual(result["status"], "processed")
+            self.assertTrue(result["cooldown_applied"])
+            self.assertEqual(result["pool_node"], "hk-01 | http://a:1")
+            self.assertTrue(result["exit_ip_recorded"])
+            self.assertEqual(pool._nodes["hk-01 | http://a:1"].status, "cooldown")
+
+    def test_legacy_record_only_records_exit_ip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proxy_pool.configure_proxy_pool(lambda: _make_test_pool(sticky_scope="task"), lambda: ("sig",))
+            repo, record_id = self._repo_with_record(tmp, {"exit_ip": "198.51.100.9"})
+            result = pp.apply_risk_response(
+                repo, self._payload(), record_id, "victim@example.com", {}
+            )
+            self.assertFalse(result["cooldown_applied"])
+            self.assertTrue(result["exit_ip_recorded"])
+            self.assertIn("历史账号", result["error"])
+
+    def test_missing_exit_ip_still_attempts_cooldown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pool = _make_test_pool(sticky_scope="task")
+            proxy_pool.configure_proxy_pool(lambda: pool, lambda: ("sig",))
+            repo, record_id = self._repo_with_record(
+                tmp, {"pool_node": {"entry": "hk-01 | http://a:1"}}
+            )
+            result = pp.apply_risk_response(
+                repo, self._payload(), record_id, "victim@example.com", {}
+            )
+            self.assertTrue(result["cooldown_applied"])
+            self.assertFalse(result["exit_ip_recorded"])
+            self.assertIn("出口 IP", result["error"])
 
 
 class OutboxTests(unittest.TestCase):
