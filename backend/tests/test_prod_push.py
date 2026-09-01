@@ -386,6 +386,30 @@ class RiskResponseTests(unittest.TestCase):
             self.assertIn("出口 IP", result["error"])
 
 
+class NodeExitIpHelperTests(unittest.TestCase):
+    def test_current_node_exit_ip_returns_reported_ip(self):
+        proxy_pool.release_task()
+        pool = _make_test_pool(sticky_scope="task")
+        proxy_pool.configure_proxy_pool(lambda: pool, lambda: ("sig",))
+        try:
+            proxy_pool.bind_task("w1")
+            pool.report_success(proxy_pool.current_raw_url(), egress_ip="203.0.113.5")
+            self.assertEqual(proxy_pool.current_node_exit_ip(), "203.0.113.5")
+            pool.report_success(proxy_pool.current_raw_url(), egress_ip="203.0.113.6")
+            self.assertEqual(proxy_pool.current_node_exit_ip(), "203.0.113.6")
+        finally:
+            proxy_pool.release_task()
+
+    def test_current_node_exit_ip_empty_when_unbound_or_unreported(self):
+        proxy_pool.release_task()
+        pool = _make_test_pool(sticky_scope="task")
+        proxy_pool.configure_proxy_pool(lambda: pool, lambda: ("sig",))
+        self.assertEqual(proxy_pool.current_node_exit_ip(), "")
+        proxy_pool.bind_task("w1")
+        self.assertEqual(proxy_pool.current_node_exit_ip(), "")
+        proxy_pool.release_task()
+
+
 class OutboxTests(unittest.TestCase):
     def test_enqueue_claim_finish_flow(self):
         import json as _json
