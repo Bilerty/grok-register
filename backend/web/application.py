@@ -205,6 +205,11 @@ class ProxyPoolKeyBody(BaseModel):
     key: str = ""
 
 
+class ProxyPoolCooldownBody(BaseModel):
+    key: str = ""
+    reason: str = ""
+
+
 def _batch_account_ids(ids: List[int]) -> List[int]:
     normalized: List[int] = []
     seen = set()
@@ -1630,6 +1635,15 @@ def create_app() -> FastAPI:
             gr.config["proxy"] = "\n".join(lines)
             gr.save_config()
         return {"ok": True, "removed": removed, "removed_url": redact_proxy_text(url)}
+
+    @app.post("/api/proxy-pool/node/cooldown")
+    def api_proxy_pool_node_cooldown(body: ProxyPoolCooldownBody) -> Dict[str, Any]:
+        """手动冷却节点（Web 进程内存池内生效，供面板/运维使用）。"""
+        url = _pool_url_by_key(body.key)
+        proxy_pool.get_pool().report_failure(
+            url, reason=redact_proxy_text(body.reason) or "手动冷却"
+        )
+        return {"ok": True, "cooled": redact_proxy_text(url)}
 
     @app.post("/api/proxy-pool/clear")
     def api_proxy_pool_clear() -> Dict[str, Any]:
