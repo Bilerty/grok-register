@@ -1026,6 +1026,17 @@ def current_node_status() -> str:
     return _current_pool()._status_of(raw, time.time())
 
 
+def current_node_exit_ip() -> str:
+    """当前绑定节点已知的出口 IP（来自探测/上报记录）；未绑定时返回空串。"""
+    raw = current_raw_url()
+    if not raw:
+        return ""
+    pool = _current_pool()
+    with pool._lock:
+        state = pool._nodes.get(raw)
+    return state.egress_ip if state is not None else ""
+
+
 def rebind_if_unhealthy(email: str = "") -> bool:
     """绑定节点不再健康时自动换节点；返回是否已切换（引擎据此重启浏览器）。"""
     raw = current_raw_url()
