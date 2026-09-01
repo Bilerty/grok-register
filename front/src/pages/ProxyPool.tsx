@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, Network, RefreshCw, RotateCcw, Trash2, Upload } from "lucide-react";
+import { AlertTriangle, CloudFog, Network, RefreshCw, RotateCcw, Trash2, Upload } from "lucide-react";
 import {
   Badge,
   Button,
@@ -166,6 +166,21 @@ export function ProxyPoolPage() {
       await load();
     } catch (err: any) {
       showToast(err.message || "操作失败", "error");
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const onNodeCooldown = async (key: string) => {
+    const reason = window.prompt("冷却原因（将进入配置的冷却时长窗口）：", "手动冷却");
+    if (reason === null) return;
+    setBusyKey(`cooldown:${key}`);
+    try {
+      await api.cooldownProxyPoolNode(key, reason || "手动冷却");
+      showToast("节点已进入冷却", "success");
+      await load();
+    } catch (err: any) {
+      showToast(err.message || "冷却失败", "error");
     } finally {
       setBusyKey("");
     }
@@ -432,6 +447,16 @@ export function ProxyPoolPage() {
                             <Button
                               size="icon"
                               variant="ghost"
+                              className="h-8 w-8"
+                              disabled={busyKey === `cooldown:${node.key}` || node.status !== "healthy"}
+                              onClick={() => void onNodeCooldown(node.key)}
+                              aria-label="冷却该节点"
+                            >
+                              <CloudFog className="h-4 w-4" aria-hidden="true" />
+                            </Button>
+                            <Button
+                              size="icon"
+                              variant="ghost"
                               className="h-8 w-8 text-red-700"
                               disabled={busyKey === `remove:${node.key}`}
                               onClick={() => void onNodeAction(node.key, "remove")}
@@ -479,6 +504,14 @@ export function ProxyPoolPage() {
                         onClick={() => void onNodeAction(node.key, "reset")}
                       >
                         复位
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={node.status !== "healthy"}
+                        onClick={() => void onNodeCooldown(node.key)}
+                      >
+                        冷却
                       </Button>
                       <Button size="sm" variant="ghost" className="text-red-700" onClick={() => void onNodeAction(node.key, "remove")}>
                         移除

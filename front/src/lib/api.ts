@@ -568,6 +568,11 @@ export const api = {
       ok: boolean;
       result: { ok: boolean; egress_ip: string; latency_ms: number | null; error: string };
     }>("/api/proxy-pool/node/probe", { method: "POST", body: JSON.stringify({ key }) }),
+  cooldownProxyPoolNode: (key: string, reason: string) =>
+    request<{ ok: boolean; cooled: string }>("/api/proxy-pool/node/cooldown", {
+      method: "POST",
+      body: JSON.stringify({ key, reason }),
+    }),
   clearProxyPoolCooldown: (key: string) =>
     request<{ ok: boolean; changed: boolean }>("/api/proxy-pool/node/clear-cooldown", {
       method: "POST",
