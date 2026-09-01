@@ -928,7 +928,8 @@ def create_app() -> FastAPI:
             )
             # fork 定制：非"正常"判定视为风控 → 冷却注册所用池节点 + 记录出口 IP 风控名单
             try:
-                repository = _gr().get_registration_repository()
+                gr = _gr()
+                repository = gr.get_registration_repository()
                 risk = prod_push.apply_risk_response(
                     repository,
                     payload,
