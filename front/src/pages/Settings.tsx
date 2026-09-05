@@ -1128,6 +1128,12 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
             </div>
             <ConfigField {...fieldState} label="邮件文件夹" field="outlookemail_folder" helper="accounts 来源拉取邮件的文件夹，默认 all" />
             <ConfigField {...fieldState} label="单次拉取邮件数" field="outlookemail_top" type="number" />
+            <ConfigField {...fieldState}
+              label="收件时间容忍度（秒）"
+              field="outlookemail_received_tolerance_seconds"
+              type="number"
+              helper="注册机与邮箱服务两机/两站点存在时钟差时，提交前该秒数内收到的邮件仍视为验证码邮件；默认 120，设 0 恢复严格过滤"
+            />
             <ConfigField {...fieldState} label="临时邮箱标签 ID" field="outlookemail_temp_tag_ids" helper="仅 temp 来源使用，多个 ID 用逗号分隔" />
             <ConfigField {...fieldState}
               label="管理网页登录密码"

@@ -1071,10 +1071,15 @@ def wait_for_code(
     log_callback: Optional[Callable[[str], None]] = None,
     cancel_callback: Optional[Callable[[], bool]] = None,
     min_received_at: Optional[float] = None,
+    received_tolerance: float = 0,
 ) -> str:
     deadline = time.time() + timeout
     seen_ids: set[str] = set()
     normalized_source = normalize_source(source)
+    # 时间容忍度：注册机与邮箱服务可能分属两机/两站点，时钟存在偏差。
+    # received_at 落在 [min_received_at - tolerance, min_received_at] 区间的邮件
+    # 视为提交后到达（时钟差所致），不误杀；仅更早的邮件才跳过。
+    cutoff = (min_received_at - max(float(received_tolerance or 0), 0)) if min_received_at is not None else None
     while time.time() < deadline:
         raise_if_cancelled(cancel_callback)
         try:
@@ -1122,11 +1127,12 @@ def wait_for_code(
                     if log_callback:
                         log_callback("[Debug] OutlookEmail 跳过无可用收件时间的邮件")
                     continue
-                if received_at <= min_received_at:
+                if received_at <= cutoff:
                     if log_callback:
                         log_callback(
                             "[Debug] OutlookEmail 跳过提交邮箱前收到的邮件: "
-                            f"received_at={received_at:.3f} <= submitted_at={min_received_at:.3f}"
+                            f"received_at={received_at:.3f} <= "
+                            f"submitted_at={min_received_at:.3f} - 容忍度{float(received_tolerance or 0):.0f}s"
                         )
                     continue
             if log_callback:

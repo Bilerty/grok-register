@@ -332,6 +332,7 @@ DEFAULT_CONFIG = {
     "outlookemail_top": 10,
     "outlookemail_pick_mode": "random",
     "outlookemail_disable_after_cpa_success": False,
+    "outlookemail_received_tolerance_seconds": 120,
     "proxy": "http://127.0.0.1:7890",
     "proxy_mode": "",
     "proxy_selection": "round_robin",
@@ -1299,6 +1300,18 @@ def get_outlookemail_source():
     return outlookemail_provider.normalize_source(config.get("outlookemail_source", "accounts"))
 
 
+def get_outlookemail_received_tolerance() -> float:
+    """收件时间容忍度（秒）：注册机与邮箱服务两机/两站点时钟差补偿。
+
+    received_at 落在 [submitted_at - tolerance, submitted_at] 的邮件视为
+    提交后到达；默认 120 秒。设为 0 恢复严格过滤。
+    """
+    try:
+        return max(float(config.get("outlookemail_received_tolerance_seconds", 120) or 0), 0)
+    except (TypeError, ValueError):
+        return 120.0
+
+
 def get_outlookemail_group_id() -> str:
     return str(config.get("outlookemail_group_id", "") or "").strip()
 
@@ -1627,6 +1640,7 @@ def outlookemail_get_oai_code(
             timeout=timeout,
             poll_interval=poll_interval,
             min_received_at=min_received_at,
+            received_tolerance=get_outlookemail_received_tolerance(),
             raise_if_cancelled=raise_if_cancelled,
             sleep_with_cancel=sleep_with_cancel,
             log_callback=log_callback,
