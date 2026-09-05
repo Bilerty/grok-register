@@ -1,4 +1,6 @@
+import time
 import unittest
+from unittest import mock
 from datetime import datetime, timezone
 
 from backend.mailbox import outlook_pool
@@ -88,6 +90,62 @@ class FakeSession:
             }
         )
         return FakeResponse({"success": True, "message": "状态更新成功"})
+
+
+class WaitForCodeToleranceTests(unittest.TestCase):
+    """收件时间容忍度：两机/两站点时钟差导致 received_at 略早于 submitted_at
+    的真实验证码邮件不应被误杀。"""
+
+    def _run(self, received_at, tolerance, min_received_at=None):
+        from backend.mailbox import outlook_pool
+
+        base = min_received_at if min_received_at is not None else 1788647073.865
+        message = {
+            "id": "m1",
+            "subject": "Verify your email",
+            "body": {"content": "Your code is I6R-B2W"},
+            "received_at": received_at,
+        }
+        calls = {"count": 0}
+
+        def fake_get_messages(*args, **kwargs):
+            calls["count"] += 1
+            return [message] if calls["count"] == 1 else []
+
+        def ok_cancel(*args, **kwargs):
+            pass
+
+        with mock.patch.object(outlook_pool, "get_messages", fake_get_messages):
+            return outlook_pool.wait_for_code(
+                http_get=lambda *a, **k: None,
+                session_factory=lambda *a, **k: None,
+                api_base="http://x",
+                email="victim@example.com",
+                api_key="k",
+                source="accounts",
+                timeout=0.4,
+                poll_interval=0.02,
+                min_received_at=base,
+                received_tolerance=tolerance,
+                raise_if_cancelled=ok_cancel,
+                sleep_with_cancel=lambda s, c=None: time.sleep(0.01),
+            )
+
+    def test_skewed_real_mail_within_tolerance_is_accepted(self):
+        # 真实验证码邮件 received_at 比 submitted_at 早 5 秒（时钟差），容忍度 120s
+        code = self._run(received_at=1788647073.865 - 5, tolerance=120)
+        self.assertEqual(code, "I6R-B2W")
+
+    def test_zero_tolerance_keeps_strict_filter(self):
+        with self.assertRaises(Exception) as raised:
+            self._run(received_at=1788647073.865 - 5, tolerance=0)
+        self.assertIn("未收到验证码", str(raised.exception))
+
+    def test_mail_far_older_than_tolerance_is_skipped(self):
+        # 容忍度 120s，但邮件是 30 天前的历史邮件 → 仍跳过
+        with self.assertRaises(Exception) as raised:
+            self._run(received_at=1788647073.865 - 30 * 86400, tolerance=120)
+        self.assertIn("未收到验证码", str(raised.exception))
 
 
 class OutlookEmailDisableTests(unittest.TestCase):

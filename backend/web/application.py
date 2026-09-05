@@ -77,6 +77,7 @@ CONFIG_PUBLIC_KEYS = (
     "outlookemail_session_cookie",
     "outlookemail_temp_tag_ids",
     "outlookemail_folder",
+    "outlookemail_received_tolerance_seconds",
     "outlookemail_top",
     "outlookemail_pick_mode",
     "outlookemail_disable_after_cpa_success",
