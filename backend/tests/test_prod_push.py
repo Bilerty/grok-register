@@ -75,6 +75,43 @@ class SidTests(unittest.TestCase):
         self.assertEqual(pp.extract_sid(""), "")
 
 
+class TransientErrorTests(unittest.TestCase):
+    def test_curl_connection_errors_are_transient(self):
+        for code in (7, 28, 35, 52, 56):
+            exc = RuntimeError(f"Failed to perform, curl: ({code}) boom")
+            self.assertTrue(pp.is_transient_network_error(exc), code)
+
+    def test_curl_code_attribute_is_recognized(self):
+        class FakeCurlError(Exception):
+            code = 56
+
+        self.assertTrue(pp.is_transient_network_error(FakeCurlError("recv fail")))
+        self.assertFalse(pp.is_transient_network_error(Exception("plain")))
+
+    def test_non_transient_errors(self):
+        self.assertFalse(pp.is_transient_network_error(RuntimeError("本地缺少 grok_web 授权 JSON")))
+        self.assertFalse(pp.is_transient_network_error(RuntimeError("curl: (22) HTTP 400")))
+        self.assertFalse(pp.is_transient_network_error(RuntimeError("Grok2API 导入失败")))
+
+    def test_strip_platform_suffix(self):
+        self.assertEqual(pp.strip_platform_suffix("Sq9pPDWbbuild"), "Sq9pPDWb")
+        self.assertEqual(pp.strip_platform_suffix("Sq9pPDWbweb"), "Sq9pPDWb")
+        self.assertEqual(pp.strip_platform_suffix("sidCCC"), "sidCCC")
+        self.assertEqual(pp.strip_platform_suffix("web"), "web")  # 剥完为空则不剥
+        self.assertEqual(pp.strip_platform_suffix(""), "")
+
+
+class TerminalStatusTests(unittest.TestCase):
+    def test_pushed_and_skipped_are_terminal(self):
+        self.assertTrue(pp.is_terminal_push_status("pushed"))
+        self.assertTrue(pp.is_terminal_push_status("skipped"))
+
+    def test_partial_and_failed_are_not_terminal(self):
+        # partial 可能只是个别域瞬时网络错误，交由 outbox 退避重跑
+        self.assertFalse(pp.is_terminal_push_status("partial"))
+        self.assertFalse(pp.is_terminal_push_status("failed"))
+
+
 class CasefoldAuthFileTests(unittest.TestCase):
     def test_find_auth_files_matches_case_insensitively(self):
         from backend.integrations import auth_exchange
@@ -157,6 +194,30 @@ class FakeClient:
         return len(account_ids)
 
 
+def make_push_config(**overrides):
+    """生产推送执行用配置（build+web 域、带出口保护）。"""
+    config = {
+        "prod_push_enabled": True,
+        "prod_grok2api_remote_url": "http://prod:8000",
+        "prod_grok2api_remote_username": "admin",
+        "prod_grok2api_remote_password": "pw",
+        "grok2api_remote_url": "http://staging:8000",
+        "grok2api_remote_username": "admin",
+        "grok2api_remote_password": "pw",
+        "grok2api_auto_import": True,
+        "grok2api_auto_import_build": True,
+        "grok2api_auto_import_web": True,
+        "grok2api_auto_import_console": False,
+        "prod_push_build": True,
+        "prod_push_web": True,
+        "prod_push_console": False,
+        "prod_push_egress_guard": True,
+        "grok2api_auth_dir": "",
+    }
+    config.update(overrides)
+    return config
+
+
 def make_fake_grok2api_class(staging, prod):
     """构造一个可替换 pp.Grok2APIClient 的假类：按 URL 中的 staging/prod 选实现。"""
 
@@ -202,26 +263,7 @@ class ExecuteProdPushTests(unittest.TestCase):
         return repo, record_id
 
     def _config(self, **overrides):
-        config = {
-            "prod_push_enabled": True,
-            "prod_grok2api_remote_url": "http://prod:8000",
-            "prod_grok2api_remote_username": "admin",
-            "prod_grok2api_remote_password": "pw",
-            "grok2api_remote_url": "http://staging:8000",
-            "grok2api_remote_username": "admin",
-            "grok2api_remote_password": "pw",
-            "grok2api_auto_import": True,
-            "grok2api_auto_import_build": True,
-            "grok2api_auto_import_web": True,
-            "grok2api_auto_import_console": False,
-            "prod_push_build": True,
-            "prod_push_web": True,
-            "prod_push_console": False,
-            "prod_push_egress_guard": True,
-            "grok2api_auth_dir": "",
-        }
-        config.update(overrides)
-        return config
+        return make_push_config(**overrides)
 
     @mock.patch.object(Grok2APIClient, "login", lambda self: "token")
     def test_push_with_sid_match_and_staging_disable(self):
@@ -258,7 +300,7 @@ class ExecuteProdPushTests(unittest.TestCase):
             )
             with mock.patch.object(pp, "Grok2APIClient", make_fake_grok2api_class(staging, prod)):
                 result = pp.execute_prod_push(
-                    repo, record_id, email, self._config(grok2api_auth_dir=auth_dir)
+                    repo, record_id, email, make_push_config(grok2api_auth_dir=auth_dir)
                 )
 
             self.assertEqual(result["status"], "pushed", result)
@@ -310,6 +352,194 @@ class ExecuteProdPushTests(unittest.TestCase):
             self.assertEqual(result["status"], "skipped")
             result = pp.execute_prod_push(repo, record_id, "a@b.com", self._config(prod_grok2api_remote_password=""))
             self.assertEqual(result["status"], "skipped")
+
+
+class FlakySearchClient(FakeClient):
+    """首次 search_account 抛瞬时网络错误（模拟 import 已被服务端受理但响应丢失）。"""
+
+    def __init__(self, *args, fail_once_provider=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._fail_provider = fail_once_provider
+        self._failed_once = False
+
+    def search_account(self, provider, email):
+        if provider == self._fail_provider and not self._failed_once:
+            self._failed_once = True
+            raise RuntimeError(
+                "Failed to perform, curl: (56) Connection closed abruptly. "
+                "See https://curl.se/libcurl/c/libcurl-errors.html first for more details."
+            )
+        return super().search_account(provider, email)
+
+
+class TransientRetryTests(unittest.TestCase):
+    def _repository(self, tmp):
+        repo = RegistrationRepository(os.path.join(tmp, "results.sqlite3"))
+        record_id = repo.add_result(
+            {
+                "batch_id": "b",
+                "email": "user1@example.com",
+                "status": "success",
+                "success": True,
+                "account_file": "x.txt",
+            }
+        )
+        return repo, record_id
+
+    @mock.patch.object(pp, "DOMAIN_TRANSIENT_RETRY_DELAYS", (0.0, 0.0))
+    def test_transient_search_failure_retries_and_pushes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            auth_dir = os.path.join(tmp, "auth")
+            os.makedirs(auth_dir)
+            with open(os.path.join(auth_dir, "g2a-user1@example.com.json"), "w") as f:
+                f.write("{}")
+            repo, record_id = self._repository(tmp)
+            email = "user1@example.com"
+            prod = FlakySearchClient(
+                accounts={("grok_build", email): {"id": "301"}},
+                nodes=[{"id": "5", "name": "pool-DE-AS1-sidANY", "scope": "grok_build", "enabled": True, "proxyConfigured": True}],
+                fail_once_provider="grok_build",
+            )
+            with mock.patch.object(pp, "Grok2APIClient", make_fake_grok2api_class(FakeClient(), prod)):
+                result = pp.execute_prod_push(
+                    repo, record_id, email,
+                    make_push_config(
+                        prod_push_web=False, prod_push_console=False,
+                        grok2api_remote_url="", grok2api_auth_dir=auth_dir,
+                    ),
+                )
+            self.assertEqual(result["status"], "pushed", result)
+            build = result["domains"]["grok_build"]
+            self.assertEqual(build["status"], "pushed")
+            # 首次 search 失败 → 域内重试：import 重跑（identity upsert 幂等）
+            self.assertEqual(len(prod.imported), 2)
+            self.assertEqual(len(prod.assigned), 1)
+
+    @mock.patch.object(pp, "DOMAIN_TRANSIENT_RETRY_DELAYS", (0.0, 0.0))
+    def test_rerun_skips_pushed_domains_and_repairs_partial(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            auth_dir = os.path.join(tmp, "auth")
+            os.makedirs(auth_dir)
+            with open(os.path.join(auth_dir, "g2a-user1@example.com.json"), "w") as f:
+                f.write("{}")
+            repo, record_id = self._repository(tmp)
+            email = "user1@example.com"
+            staging = FakeClient(
+                accounts={("grok_build", email): {"id": "11", "egress_node_id": "77"}, ("grok_web", email): {"id": "12", "egress_node_id": ""}},
+                nodes=[{"id": "77", "name": "1024proxy-AT-AS8412-sidAAA", "scope": "grok_build", "enabled": True, "proxyConfigured": True}],
+            )
+            prod = FakeClient(
+                accounts={("grok_build", email): {"id": "101"}, ("grok_web", email): {"id": "102"}},
+                nodes=[
+                    {"id": "1", "name": "1024proxy-AT-AS8412-sidAAA", "scope": "grok_build", "enabled": True, "proxyConfigured": True},
+                    {"id": "3", "name": "1024proxy-AT-AS8412-sidAAAweb", "scope": "grok_web", "enabled": True, "proxyConfigured": True},
+                ],
+            )
+            fake_cls = make_fake_grok2api_class(staging, prod)
+            config = make_push_config(grok2api_auth_dir=auth_dir)
+            with mock.patch.object(pp, "Grok2APIClient", fake_cls):
+                first = pp.execute_prod_push(repo, record_id, email, config)
+            self.assertEqual(first["status"], "partial")  # web 缺授权文件
+            repo.save_prod_push_result(record_id, first)
+            # 补上 web 授权文件后整体重跑（outbox 退避重试路径）
+            with open(os.path.join(auth_dir, "grok-web-user1@example.com.json"), "w") as f:
+                f.write("{}")
+            with mock.patch.object(pp, "Grok2APIClient", fake_cls):
+                second = pp.execute_prod_push(repo, record_id, email, config)
+            self.assertEqual(second["status"], "pushed", second)
+            # build 已 pushed 被跳过：整个流程只 import 一次
+            self.assertEqual([fmt for _, fmt in prod.imported], ["grok_build", "grok_web"])
+            # web 借 build 的 sid 生成 <base>web 候选并命中
+            self.assertTrue(second["domains"]["grok_web"]["matched"])
+            self.assertEqual(second["domains"]["grok_web"]["node_id"], "3")
+            # 全部域成功后补做 staging 禁用
+            self.assertEqual(staging.disabled, [("grok_build", ["11"]), ("grok_web", ["12"])])
+
+
+class CrossChannelSidFallbackTests(unittest.TestCase):
+    def _repository(self, tmp):
+        repo = RegistrationRepository(os.path.join(tmp, "results.sqlite3"))
+        record_id = repo.add_result(
+            {
+                "batch_id": "b",
+                "email": "user1@example.com",
+                "status": "success",
+                "success": True,
+                "account_file": "x.txt",
+            }
+        )
+        return repo, record_id
+
+    @mock.patch.object(Grok2APIClient, "login", lambda self: "token")
+    def test_web_uses_build_binding_sid(self):
+        """grok-iq 只绑 build 渠道：web 应借 build 的 sid 生成 <base>web 候选。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            auth_dir = os.path.join(tmp, "auth")
+            os.makedirs(auth_dir)
+            for prefix in ("g2a-", "grok-web-"):
+                with open(os.path.join(auth_dir, f"{prefix}user1@example.com.json"), "w") as f:
+                    f.write("{}")
+            repo, record_id = self._repository(tmp)
+            email = "user1@example.com"
+            staging = FakeClient(
+                accounts={
+                    # katabump 命名：staging 只有 build 渠道绑定
+                    ("grok_build", email): {"id": "11", "egress_node_id": "77"},
+                    ("grok_web", email): {"id": "12", "egress_node_id": ""},
+                },
+                nodes=[
+                    {"id": "77", "name": "lm201-r64a-r1-par-fr-Sq9pAAbuild", "scope": "grok_build", "enabled": True, "proxyConfigured": True},
+                ],
+            )
+            prod = FakeClient(
+                accounts={("grok_build", email): {"id": "101"}, ("grok_web", email): {"id": "102"}},
+                nodes=[
+                    {"id": "1", "name": "lm201-r64a-r1-par-fr-Sq9pAAbuild", "scope": "grok_build", "enabled": True, "proxyConfigured": True},
+                    {"id": "3", "name": "lm201-r64a-r1-par-fr-Sq9pAAweb", "scope": "grok_web", "enabled": True, "proxyConfigured": True},
+                    {"id": "4", "name": "vendor-DE-AS5-sidZZZ", "scope": "grok_web", "enabled": True, "proxyConfigured": True},
+                ],
+            )
+            with mock.patch.object(pp, "Grok2APIClient", make_fake_grok2api_class(staging, prod)):
+                result = pp.execute_prod_push(
+                    repo, record_id, email,
+                    make_push_config(grok2api_auth_dir=auth_dir),
+                )
+            self.assertEqual(result["status"], "pushed", result)
+            web = result["domains"]["grok_web"]
+            self.assertTrue(web["matched"])
+            self.assertEqual(web["sid"], "Sq9pAAweb")  # <基础sid>web 候选
+            self.assertEqual(web["node_id"], "3")
+            build = result["domains"]["grok_build"]
+            self.assertTrue(build["matched"])
+            self.assertEqual(build["sid"], "Sq9pAAbuild")
+
+    @mock.patch.object(Grok2APIClient, "login", lambda self: "token")
+    def test_web_falls_back_to_random_without_any_binding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            auth_dir = os.path.join(tmp, "auth")
+            os.makedirs(auth_dir)
+            for prefix in ("g2a-", "grok-web-"):
+                with open(os.path.join(auth_dir, f"{prefix}user1@example.com.json"), "w") as f:
+                    f.write("{}")
+            repo, record_id = self._repository(tmp)
+            email = "user1@example.com"
+            staging = FakeClient(accounts={})  # staging 侧三渠道都查不到
+            prod = FakeClient(
+                accounts={("grok_build", email): {"id": "101"}, ("grok_web", email): {"id": "102"}},
+                nodes=[
+                    {"id": "1", "name": "pool-DE-AS1-sidANY", "scope": "grok_build", "enabled": True, "proxyConfigured": True},
+                    {"id": "3", "name": "lm201-r64a-r1-par-fr-Sq9pAAweb", "scope": "grok_web", "enabled": True, "proxyConfigured": True},
+                ],
+            )
+            with mock.patch.object(pp, "Grok2APIClient", make_fake_grok2api_class(staging, prod)):
+                result = pp.execute_prod_push(
+                    repo, record_id, email,
+                    make_push_config(grok2api_auth_dir=auth_dir),
+                )
+            self.assertEqual(result["status"], "pushed", result)
+            web = result["domains"]["grok_web"]
+            self.assertFalse(web["matched"])  # 无绑定可用 → 随机
+            self.assertEqual(web["sid"], "")
 
 
 def _make_test_pool(**kwargs):
