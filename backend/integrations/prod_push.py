@@ -11,14 +11,17 @@ isolated=false、probe_outcome=passed）后，把该账号推送至生产 grok2a
   同 sid 节点绑定；找不到则随机挑一个（enabled 且已配代理）
 - 全部选定域推送成功后禁用 staging 侧同账号，避免同一 SSO 双池活跃
 
-执行在持久 outbox（store.prod_push_outbox）+ 单 daemon 线程 worker 中进行，
-失败按指数退避重试（上限 store.PROD_PUSH_MAX_ATTEMPTS），重启自动恢复。
+执行在持久 outbox（store.prod_push_outbox）+ 单 daemon 线程 worker 中进行：
+单域内瞬时网络错误（curl 连接类）先做域内重试；partial/failed 整体交由
+outbox 按指数退避重跑（上限 store.PROD_PUSH_MAX_ATTEMPTS，已 pushed 的域
+自动跳过），重启自动恢复。import 在 grok2api 侧按 identity upsert，重跑幂等。
 """
 
 from __future__ import annotations
 
 import logging
 import random
+import re
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -42,6 +45,30 @@ PROD_CONFIG_KEYS = (
     "prod_grok2api_remote_username",
     "prod_grok2api_remote_password",
 )
+
+# 渠道 -> katabump 命名里的平台后缀（出口节点名 = <基础sid><平台后缀>）
+PLATFORM_BY_DOMAIN: Dict[str, str] = {
+    "grok_build": "build",
+    "grok_web": "web",
+    "grok_console": "console",
+}
+
+# curl 连接类瞬时错误：无法建连/超时/SSL/空响应/对端中断。
+# 生产推送的 import（identity upsert）/查询/绑定均为幂等操作，可安全重试。
+TRANSIENT_CURL_CODES = frozenset({7, 28, 35, 52, 56})
+_CURL_CODE_RE = re.compile(r"curl: \((\d+)\)")
+
+# 单域内瞬时网络错误重试的间隔（秒）；耗尽后交由 outbox 退避重试
+DOMAIN_TRANSIENT_RETRY_DELAYS: Tuple[float, ...] = (3.0, 8.0)
+
+
+def is_transient_network_error(exc: BaseException) -> bool:
+    """判定是否为可重试的瞬时网络错误（curl 连接类错误码或其消息形态）。"""
+    code = getattr(exc, "code", None)
+    if isinstance(code, int) and code in TRANSIENT_CURL_CODES:
+        return True
+    match = _CURL_CODE_RE.search(str(exc))
+    return bool(match) and int(match.group(1)) in TRANSIENT_CURL_CODES
 
 
 def extract_sid(node_name: str) -> str:
@@ -162,6 +189,11 @@ def apply_risk_response(
     return result
 
 
+def is_terminal_push_status(status: str) -> bool:
+    """pushed/skipped 为终态；partial/failed 交给 outbox 退避重跑（幂等）。"""
+    return str(status or "") in ("pushed", "skipped")
+
+
 def selected_domains(config: Dict[str, Any]) -> Tuple[str, ...]:
     """生产推送域 = prod_push_<域> 开关 ∩ staging"Grok2API 目标"域。"""
     if not bool(config.get("grok2api_auto_import", False)):
@@ -182,19 +214,29 @@ def prod_client_from_config(config: Dict[str, Any]) -> Optional[Grok2APIClient]:
     return Grok2APIClient(values[0], values[1], values[2])
 
 
-def staging_sid_for_account(
+def strip_platform_suffix(sid: str) -> str:
+    """剥掉节点 sid 末尾的平台后缀（build/web/console），得到基础 sid。"""
+    value = str(sid or "").strip()
+    for suffix in sorted(PLATFORM_BY_DOMAIN.values(), key=len, reverse=True):
+        if value.endswith(suffix) and len(value) > len(suffix):
+            return value[: -len(suffix)]
+    return value
+
+
+def _staging_sid_from_binding(
     staging_client: Grok2APIClient,
     provider: str,
     email: str,
     node_cache: Dict[str, Dict[str, str]],
+    account_cache: Dict[str, Optional[Dict[str, Any]]],
 ) -> str:
-    """查 staging 上该账号绑定的出口节点名并解析 sid；未绑定/查不到返回空串。"""
-    account = staging_client.search_account(provider, email)
-    if not account:
+    """查 staging 上某渠道账号绑定的出口节点名并解析 sid；未绑定/查不到返回空串。"""
+    if provider not in account_cache:
+        account_cache[provider] = staging_client.search_account(provider, email) or None
+    account = account_cache.get(provider)
+    if not account or not str(account.get("egress_node_id") or "").strip():
         return ""
-    node_id = str(account.get("egress_node_id") or "").strip()
-    if not node_id:
-        return ""
+    node_id = str(account["egress_node_id"]).strip()
     if node_id not in node_cache:
         node_cache[node_id] = ""
         for node in staging_client.list_egress_nodes(Grok2APIClient.PROVIDER_NODE_SCOPES[provider]):
@@ -202,13 +244,46 @@ def staging_sid_for_account(
     return extract_sid(node_cache.get(node_id, ""))
 
 
+def staging_sid_candidates_for_account(
+    staging_client: Grok2APIClient,
+    provider: str,
+    email: str,
+    node_cache: Dict[str, Dict[str, str]],
+    account_cache: Dict[str, Optional[Dict[str, Any]]],
+) -> Tuple[str, ...]:
+    """出口保护用的 sid 候选（有序）。
+
+    grok-iq 只在 build 渠道绑定探针出口，web/console 通常没有 staging 绑定；
+    而同一账号三渠道同源（katabump 命名 = <基础sid><平台后缀>），故：
+    1. 本渠道有绑定 → 直接用其 sid 原样；
+    2. 否则借其它渠道绑定的 sid，剥掉平台后缀后生成
+       ``<基础sid><本渠道平台>`` 与 ``<基础sid>`` 两个候选。
+    """
+    own = _staging_sid_from_binding(staging_client, provider, email, node_cache, account_cache)
+    if own:
+        return (own,)
+    for other in DOMAIN_KEYS:
+        if other == provider:
+            continue
+        sid = _staging_sid_from_binding(staging_client, other, email, node_cache, account_cache)
+        if sid:
+            base = strip_platform_suffix(sid)
+            if not base:
+                continue
+            platform = PLATFORM_BY_DOMAIN.get(provider, "")
+            candidates = [f"{base}{platform}"] if platform else []
+            candidates.append(base)
+            return tuple(dict.fromkeys(candidates))
+    return ()
+
+
 def pick_prod_node(
     prod_client: Grok2APIClient,
     provider: str,
-    sid: str,
+    sids: Tuple[str, ...],
     node_cache: Dict[str, Tuple[str, List[Dict[str, Any]]]],
 ) -> Dict[str, Any]:
-    """出口保护选节点：优先 sid 精确匹配，否则随机一个可用节点。
+    """出口保护选节点：优先 sid 候选精确匹配，否则随机一个可用节点。
 
     可用 = enabled 且已配置代理；scope 与 provider 兼容（console 用
     grok_console scope，其余一一对应）。返回 {"node", "matched"}。
@@ -220,8 +295,9 @@ def pick_prod_node(
     usable = [n for n in nodes if n["enabled"] and n["proxy_configured"]]
     if not usable:
         raise Grok2APIImportError(f"生产号池没有可用的 {scope} 出口节点")
-    if sid:
-        matched = [n for n in usable if extract_sid(n["name"]) == sid]
+    wanted = {sid for sid in sids if sid}
+    if wanted:
+        matched = [n for n in usable if extract_sid(n["name"]) in wanted]
         if matched:
             return {"node": matched[0], "matched": True}
     return {"node": random.choice(usable), "matched": False}
@@ -290,9 +366,9 @@ def execute_prod_push(
     )
 
     staging_node_cache: Dict[str, Dict[str, str]] = {}
+    staging_account_cache: Dict[str, Optional[Dict[str, Any]]] = {}
     prod_node_cache: Dict[str, Tuple[str, List[Dict[str, Any]]]] = {}
     pushed_any = False
-    all_pushed = True
 
     for domain in domains:
         prior = previous.get(domain) or {}
@@ -301,48 +377,67 @@ def execute_prod_push(
             pushed_any = True
             continue
         entry: Dict[str, Any] = {"status": "failed", "matched": False, "sid": ""}
-        try:
-            file_path = auth_files.get(domain)
-            if file_path is None:
-                raise Grok2APIImportError(f"本地缺少 {domain} 授权 JSON")
-            prod_client.import_auth_file(file_path, domain)
-            account = prod_client.search_account(domain, email)
-            if not account or not account.get("id"):
-                raise Grok2APIImportError("推送后未能在生产号池反查到账号")
-            entry["prod_account_id"] = account["id"]
+        # 域内瞬时网络错误重试（对端断开/超时等）；import 为 identity upsert，可安全重跑
+        for attempt in range(len(DOMAIN_TRANSIENT_RETRY_DELAYS) + 1):
+            try:
+                file_path = auth_files.get(domain)
+                if file_path is None:
+                    raise Grok2APIImportError(f"本地缺少 {domain} 授权 JSON")
+                prod_client.import_auth_file(file_path, domain)
+                account = prod_client.search_account(domain, email)
+                if not account or not account.get("id"):
+                    raise Grok2APIImportError("推送后未能在生产号池反查到账号")
+                entry["prod_account_id"] = account["id"]
 
-            guard = bool(config.get("prod_push_egress_guard", True))
-            sid = ""
-            if guard and staging_client is not None:
-                sid = staging_sid_for_account(staging_client, domain, email, staging_node_cache)
-            entry["sid"] = sid
-            if guard:
-                picked = pick_prod_node(prod_client, domain, sid, prod_node_cache)
-                node = picked["node"]
-                entry["matched"] = bool(picked["matched"])
-            else:
-                picked = pick_prod_node(prod_client, domain, "", prod_node_cache)
-                node = picked["node"]
-                entry["matched"] = False
-            prod_client.assign_account(domain, node["id"], account["id"], "manual")
-            entry["status"] = "pushed"
-            entry["node_name"] = node["name"]
-            entry["node_id"] = node["id"]
-            pushed_any = True
-        except Exception as exc:
-            all_pushed = False
-            entry["error"] = str(exc)[:300]
-            logger.warning(
-                "[ProdPush] %s 域推送失败 registration=%s: %s",
-                domain,
-                registration_id,
-                entry["error"],
-            )
+                guard = bool(config.get("prod_push_egress_guard", True))
+                sids: Tuple[str, ...] = ()
+                if guard and staging_client is not None:
+                    sids = staging_sid_candidates_for_account(
+                        staging_client, domain, email,
+                        staging_node_cache, staging_account_cache,
+                    )
+                entry["sid"] = sids[0] if sids else ""
+                if guard:
+                    picked = pick_prod_node(prod_client, domain, sids, prod_node_cache)
+                    node = picked["node"]
+                    entry["matched"] = bool(picked["matched"])
+                else:
+                    picked = pick_prod_node(prod_client, domain, (), prod_node_cache)
+                    node = picked["node"]
+                    entry["matched"] = False
+                prod_client.assign_account(domain, node["id"], account["id"], "manual")
+                entry["status"] = "pushed"
+                entry["node_name"] = node["name"]
+                entry["node_id"] = node["id"]
+                entry.pop("error", None)
+                pushed_any = True
+                break
+            except Exception as exc:
+                entry["error"] = str(exc)[:300]
+                if attempt < len(DOMAIN_TRANSIENT_RETRY_DELAYS) and is_transient_network_error(exc):
+                    logger.warning(
+                        "[ProdPush] %s 域瞬时网络错误（第 %d 次），%.0fs 后重试 registration=%s: %s",
+                        domain,
+                        attempt + 1,
+                        DOMAIN_TRANSIENT_RETRY_DELAYS[attempt],
+                        registration_id,
+                        entry["error"],
+                    )
+                    time.sleep(DOMAIN_TRANSIENT_RETRY_DELAYS[attempt])
+                    continue
+                logger.warning(
+                    "[ProdPush] %s 域推送失败 registration=%s: %s",
+                    domain,
+                    registration_id,
+                    entry["error"],
+                )
+                break
         result["domains"][domain] = entry
 
     domain_states = [entry.get("status") for entry in result["domains"].values()]
     if domain_states and all(state == "pushed" for state in domain_states):
         result["status"] = "pushed"
+        result["pushed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     elif pushed_any:
         result["status"] = "partial"
     else:
@@ -450,7 +545,7 @@ class ProdPushWorker:
                     repository, registration_id, email, dict(config_provider())
                 )
                 repository.save_prod_push_result(registration_id, result)
-                terminal = result.get("status") in ("pushed", "partial", "skipped")
+                terminal = is_terminal_push_status(result.get("status"))
                 repository.finish_prod_push(
                     claimed.get("event_id"),
                     error=result.get("error", ""),
