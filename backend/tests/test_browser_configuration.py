@@ -221,6 +221,148 @@ class BrowserHeadlessConfigTests(unittest.TestCase):
 
         self.assertEqual(logs, [])
 
+    def test_low_traffic_does_not_intercept_signup_document_or_turnstile(self):
+        browser_session.configure(
+            is_low_traffic=lambda: True,
+            get_traffic_savings_level=lambda: "more",
+        )
+        self.assertFalse(
+            browser_session.low_traffic_should_intercept(
+                "https://accounts.x.ai/sign-up?redirect=grok-com"
+            )
+        )
+        self.assertFalse(
+            browser_session.low_traffic_should_intercept(
+                "https://accounts.x.ai/api/register"
+            )
+        )
+        self.assertFalse(
+            browser_session.low_traffic_should_intercept(
+                "https://challenges.cloudflare.com/turnstile/v0/api.js"
+            )
+        )
+        self.assertFalse(
+            browser_session.low_traffic_should_intercept("https://grok.com/")
+        )
+        self.assertTrue(
+            browser_session.low_traffic_should_intercept(
+                "https://accounts.x.ai/_next/static/chunks/app-hash.js"
+            )
+        )
+        self.assertTrue(
+            browser_session.low_traffic_should_intercept(
+                "https://cdn.grok.com/assets/app.js"
+            )
+        )
+        self.assertTrue(
+            browser_session.low_traffic_should_intercept(
+                "https://cdn.grok.com/assets/hero.webp"
+            )
+        )
+        self.assertTrue(
+            browser_session.low_traffic_should_intercept(
+                "https://grok.com/assets/hero.webp"
+            )
+        )
+        self.assertTrue(
+            browser_session.low_traffic_should_intercept(
+                "https://cdn.cookielaw.org/script.js"
+            )
+        )
+
+        browser_session.configure(
+            is_low_traffic=lambda: True,
+            get_traffic_savings_level=lambda: "standard",
+        )
+        self.assertFalse(
+            browser_session.low_traffic_should_intercept(
+                "https://accounts.x.ai/_next/static/chunks/app-hash.js"
+            )
+        )
+
+    def test_low_traffic_routing_fetches_uncached_static_assets(self):
+        browser_session.configure(
+            is_low_traffic=lambda: True,
+            get_traffic_savings_level=lambda: "more",
+        )
+        context = mock.Mock()
+        browser_session._install_low_traffic_routing(context)
+
+        matcher, handler = context.route.call_args.args
+        self.assertTrue(callable(matcher))
+        self.assertFalse(matcher("https://accounts.x.ai/sign-up?redirect=grok-com"))
+        self.assertTrue(matcher("https://cdn.grok.com/assets/app.js"))
+        self.assertTrue(matcher("https://accounts.x.ai/_next/static/chunks/app-hash.js"))
+        context.on.assert_not_called()
+
+        route = mock.Mock()
+        fetched = mock.Mock(
+            status=200,
+            headers={"content-type": "application/javascript"},
+            body=mock.Mock(return_value=b"bundle"),
+        )
+        route.fetch.return_value = fetched
+        request = mock.Mock(
+            url="https://cdn.grok.com/assets/app.js",
+            resource_type="script",
+            method="GET",
+            headers={},
+        )
+        with mock.patch.object(browser_session, "_cached_response", return_value=None), mock.patch.object(
+            browser_session, "_store_cached_response"
+        ) as store:
+            handler(route, request)
+        route.fetch.assert_called_once()
+        store.assert_called_once()
+        route.fulfill.assert_called_once_with(response=fetched, body=b"bundle")
+        route.continue_.assert_not_called()
+
+        route.reset_mock()
+        with mock.patch.object(
+            browser_session,
+            "_cached_response",
+            return_value=(200, {"content-type": "application/javascript"}, b"ok"),
+        ):
+            handler(route, request)
+        route.fulfill.assert_called_once()
+        route.fetch.assert_not_called()
+        route.continue_.assert_not_called()
+
+        route.reset_mock()
+        image = mock.Mock(
+            url="https://cdn.grok.com/assets/hero.webp",
+            resource_type="image",
+            method="GET",
+            headers={},
+        )
+        handler(route, image)
+        route.abort.assert_called_once()
+
+        route.reset_mock()
+        document = mock.Mock(
+            url="https://accounts.x.ai/sign-up?redirect=grok-com",
+            resource_type="document",
+            method="GET",
+            headers={},
+        )
+        handler(route, document)
+        route.continue_.assert_called_once()
+        route.fetch.assert_not_called()
+
+        route.reset_mock()
+        route.fetch.side_effect = RuntimeError("proxy timeout")
+        hashed = mock.Mock(
+            url="https://accounts.x.ai/_next/static/chunks/app-hash.js",
+            resource_type="script",
+            method="GET",
+            headers={},
+        )
+        with mock.patch.object(browser_session, "_cached_response", return_value=None):
+            handler(route, hashed)
+        route.fetch.assert_called_once()
+        route.continue_.assert_called_once()
+        route.fulfill.assert_not_called()
+
     def test_accounts_resource_diagnostics_is_disabled_outside_debug(self):
         browser_session.configure(is_debug=lambda: False)
         context = mock.Mock()

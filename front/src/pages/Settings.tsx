@@ -616,6 +616,7 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
               />
               <ToggleRow
                 title="低流量注册模式"
+                description="缓存静态资源并跳过非必需媒体；不拦截注册页文档，避免代理超时"
                 checked={!!config.browser_low_traffic_mode}
                 onCheckedChange={(value) => setField("browser_low_traffic_mode", value)}
               />
