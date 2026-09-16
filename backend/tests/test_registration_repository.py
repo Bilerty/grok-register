@@ -233,6 +233,12 @@ class RegistrationRepositoryMigrationTests(unittest.TestCase):
             self.assertEqual(store.count_results(bot_risk="normal"), 2)
             unknown_rows = store.list_results(bot_risk="unknown")
             self.assertEqual([row["email"] for row in unknown_rows], ["unknown@example.com"])
+            grokiq_rows = store.list_results(bot_risk="grokiq")
+            self.assertEqual(
+                [row["email"] for row in grokiq_rows],
+                ["grokiq-degraded@example.com"],
+            )
+            self.assertEqual(store.count_results(bot_risk="degraded"), 1)
 
     def test_list_result_ids_matches_filters_and_list_order(self):
         with tempfile.TemporaryDirectory() as tmp:

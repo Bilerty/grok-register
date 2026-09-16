@@ -149,6 +149,33 @@ _LOW_TRAFFIC_CACHE_EXCLUDED_HEADERS = {
     "transfer-encoding",
     "set-cookie",
 }
+_LOW_TRAFFIC_PASSTHROUGH_TYPES = {
+    "document",
+    "xhr",
+    "fetch",
+    "websocket",
+    "eventsource",
+    "manifest",
+}
+_LOW_TRAFFIC_BLOCK_EXTENSIONS = {
+    ".avif",
+    ".eot",
+    ".gif",
+    ".ico",
+    ".jpeg",
+    ".jpg",
+    ".m4v",
+    ".mov",
+    ".mp4",
+    ".otf",
+    ".png",
+    ".svg",
+    ".ttf",
+    ".webm",
+    ".webp",
+    ".woff",
+    ".woff2",
+}
 _low_traffic_cache_pruned = False
 _low_traffic_cache_prune_lock = threading.Lock()
 
@@ -254,6 +281,27 @@ def low_traffic_should_block(url: str, resource_type: str) -> bool:
     return kind == "image" and (
         host in _LOW_TRAFFIC_MEDIA_HOSTS or host in _LOW_TRAFFIC_VISUAL_HOSTS
     )
+
+
+def low_traffic_should_intercept(url: str) -> bool:
+    """只拦截需要缓存或丢弃的静态资源，注册文档和 API 走浏览器原生网络。"""
+    try:
+        parsed = urlparse(str(url or ""))
+        host = (parsed.hostname or "").lower()
+        path = (parsed.path or "").lower()
+    except ValueError:
+        return False
+    if host in _LOW_TRAFFIC_BLOCKED_HOSTS or host in _LOW_TRAFFIC_CACHE_HOSTS:
+        return True
+    if host in _LOW_TRAFFIC_MEDIA_HOSTS:
+        return True
+    if host in _LOW_TRAFFIC_VISUAL_HOSTS:
+        return Path(path).suffix in _LOW_TRAFFIC_BLOCK_EXTENSIONS
+    if traffic_savings_level() != "more":
+        return False
+    if host not in _LOW_TRAFFIC_ACCOUNTS_HOSTS or "/cdn-cgi/" in path:
+        return False
+    return any(marker in path for marker in _LOW_TRAFFIC_ACCOUNTS_STATIC_MARKERS)
 
 
 def low_traffic_should_cache(url: str, resource_type: str, method: str = "GET") -> bool:
@@ -390,8 +438,11 @@ def _install_low_traffic_routing(browser_context, log_callback=None) -> None:
 
     def handle(route, request):
         url = str(getattr(request, "url", "") or "")
-        resource_type = str(getattr(request, "resource_type", "") or "")
+        resource_type = str(getattr(request, "resource_type", "") or "").strip().lower()
         method = str(getattr(request, "method", "GET") or "GET")
+        if resource_type in _LOW_TRAFFIC_PASSTHROUGH_TYPES:
+            route.continue_()
+            return
         if low_traffic_should_block(url, resource_type):
             route.abort()
             return
@@ -421,7 +472,7 @@ def _install_low_traffic_routing(browser_context, log_callback=None) -> None:
         except Exception:
             route.continue_()
 
-    browser_context.route("**/*", handle)
+    browser_context.route(low_traffic_should_intercept, handle)
     if log_callback:
         if traffic_savings_level() == "more":
             log_callback("[*] 低流量模式：已启用 grok.com 与 accounts.x.ai 静态资源缓存与非业务媒体拦截")
