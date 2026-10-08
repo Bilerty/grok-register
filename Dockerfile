@@ -17,9 +17,10 @@ ENV PATH=/opt/venv/bin:$PATH \
 COPY --chmod=755 docker/apt-retry.sh /usr/local/bin/apt-retry.sh
 # 编译工具仅 arm64 构建（qemu 交叉 pip install）需要：indexed-zstd 等
 # 依赖在 linux/arm64 无预编译 wheel；amd64 wheel 齐全，不装以保持构建缓存稳定。
+# libzstd-dev 提供 indexed-zstd 源码编译所需的 zstd.h。
 RUN apt-retry.sh ca-certificates python3 python3-pip python3-venv \
     && if [ "$(dpkg --print-architecture)" != "amd64" ]; then \
-         apt-retry.sh build-essential python3-dev; \
+         apt-retry.sh build-essential python3-dev libzstd-dev; \
        fi
 
 WORKDIR /build
