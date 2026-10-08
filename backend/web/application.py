@@ -451,9 +451,13 @@ def _apply_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
             if value not in {"camoufox", "cloakbrowser"}:
                 value = "camoufox"
         elif key == "browser_traffic_savings_level":
-            value = str(value or "more").strip().lower()
-            if value not in {"standard", "more", "max"}:
+            value = str(value or "standard").strip().lower()
+            if value in {"standard", "less", "light"}:
+                value = "standard"
+            elif value in {"more", "max"}:
                 value = "more"
+            else:
+                value = "standard"
         elif key == "email_provider":
             value = str(value or "cloudflare").strip().lower() or "cloudflare"
             if value not in {"cloudflare", "duckmail", "yyds", "mailnest", "outlookemail", "cloudmail"}:
@@ -1115,6 +1119,25 @@ def create_app() -> FastAPI:
     def api_account_relogin_status() -> Dict[str, Any]:
         return {"ok": True, "relogin": relogin_coordinator.status()}
 
+    @app.get("/api/accounts/relogin/logs")
+    def api_account_relogin_logs(
+        after_id: int = Query(0, ge=0),
+        limit: int = Query(500, ge=1, le=2000),
+    ) -> Dict[str, Any]:
+        return {
+            "ok": True,
+            "logs": relogin_coordinator.get_logs(after_id=after_id, limit=limit),
+            "relogin": relogin_coordinator.status(),
+        }
+
+    @app.post("/api/accounts/relogin/stop")
+    def api_account_relogin_stop() -> Dict[str, Any]:
+        try:
+            status = relogin_coordinator.stop()
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"停止失败: {exc}") from exc
+        return {"ok": True, "relogin": status}
+
     @app.get("/api/accounts/select-ids")
     def api_account_select_ids(
         status: str = Query(""),
@@ -1762,6 +1785,28 @@ def create_app() -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"终止浏览器失败: {exc}") from exc
         return {"ok": True, **result, "job": job_coordinator.status()}
+
+    @app.get("/api/browser/cache")
+    def api_browser_cache() -> Dict[str, Any]:
+        gr = _gr()
+        gr.load_config()
+        gr._wire_runtime_modules()
+        try:
+            snapshot = gr._bs.inspect_low_traffic_cache()
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"读取缓存失败: {exc}") from exc
+        return {"ok": True, **snapshot}
+
+    @app.post("/api/browser/cache/clear")
+    def api_browser_cache_clear() -> Dict[str, Any]:
+        gr = _gr()
+        gr.load_config()
+        gr._wire_runtime_modules()
+        try:
+            snapshot = gr._bs.clear_low_traffic_cache()
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"清空缓存失败: {exc}") from exc
+        return {"ok": True, **snapshot}
 
     @app.api_route("/api/connectivity", methods=["GET", "POST"])
     def api_connectivity() -> Dict[str, Any]:
