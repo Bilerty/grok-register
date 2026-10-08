@@ -67,6 +67,9 @@ jobs:
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             echo "value=linux/amd64,linux/arm64" >> "$GITHUB_OUTPUT"
+          elif [[ "${GITHUB_REF}" == refs/heads/main ]]; then
+            # main 也出双架构：latest 被多台 arm64 主机拉取，amd64-only 会导致拉取失败
+            echo "value=linux/amd64,linux/arm64" >> "$GITHUB_OUTPUT"
           else
             echo "value=linux/amd64" >> "$GITHUB_OUTPUT"
           fi
