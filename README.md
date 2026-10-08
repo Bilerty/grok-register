@@ -232,13 +232,8 @@ Windows 启动：
 | `proxy_probe_once_per_batch` | 批次开始前统一预探测池节点（默认开启）；也可在「代理池」页手动探测。手动探测与绑定补查会顺带查询出口 IP 的 ASN（ip-api.com 免费渠道，带缓存与限速），批量预探测为避免触发免费额度限制不做 ASN；ASN 随节点状态暂存，出口 IP 轮转后自动刷新覆盖 |
 | `browser_engine` | 浏览器后端：`camoufox`（默认）或 `cloakbrowser` |
 | `browser_headless` | 本机无头模式；Docker 中强制关闭 |
-<<<<<<< HEAD
-| `browser_low_traffic_mode` | 低流量注册模式，默认开启；只拦截 grok.com 静态资源/媒体，以及更多节省下的 accounts.x.ai `/_next/static/` 哈希资源。注册页文档、API 和 Cloudflare 挑战走浏览器原生网络，避免打开注册页被 Playwright 路由拖到超时 |
-| `browser_traffic_savings_level` | 低流量模式下的节省级别，默认 `more`（额外缓存 accounts.x.ai 哈希静态资源）；`standard` 仅缓存 grok.com CDN |
-=======
 | `browser_low_traffic_mode` | 低流量模式，默认开启；注册和重新登录共用静态资源缓存并跳过非必需资源。设置页可查看当前缓存并一键清空；清空后下次打开注册页或重新登录页会自动重新下载 |
 | `browser_traffic_savings_level` | 低流量模式下的节省级别，默认 `standard`（较少节省，仅缓存 grok.com CDN，账号质量更稳）；`more` 额外缓存 accounts.x.ai 哈希静态资源，但会扫描缓存内容并跳过 Castle / Mixpanel / Turnstile / 性能埋点等高风险 JS 回放。设置页会标出每个缓存文件的风险原因 |
->>>>>>> v1.0.14
 | `cpa_auto_add` | 注册后生成 CPA 授权 |
 | `sso_detailed_risk_check` | 获取 SSO 后尝试读取账号页 `botFlagSource`。上游已不再稳定下发 `bfs` / `botFlag`，该检查不能作为风控结论；账号级降智检测请用 GrokIQ |
 | `cpa_registration_risk_check` | 注册获取 SSO 后复查 grok.com `botFlag`；默认关闭。字段经常缺失，不能判断账号是否风控；必须使用 GrokIQ 做降智检测和自动隔离 |
