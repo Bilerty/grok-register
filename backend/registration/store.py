@@ -791,7 +791,7 @@ class RegistrationRepository:
                     success = 1
                     OR sso_saved = 1
                     OR lower(coalesce(failure_type, '')) IN (
-                        'already_registered', 'registration_risk', 'sso_timeout'
+                        'already_registered', 'registration_risk', 'sso_timeout', 'invalid_credentials'
                     )
                     OR lower(coalesce(email_disable_status, '')) IN ('success', 'failed')
                   )
