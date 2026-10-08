@@ -15,7 +15,12 @@ ENV PATH=/opt/venv/bin:$PATH \
     XDG_CACHE_HOME=/opt/camoufox-cache
 
 COPY --chmod=755 docker/apt-retry.sh /usr/local/bin/apt-retry.sh
-RUN apt-retry.sh ca-certificates python3 python3-pip python3-venv
+# 编译工具仅 arm64 构建（qemu 交叉 pip install）需要：indexed-zstd 等
+# 依赖在 linux/arm64 无预编译 wheel；amd64 wheel 齐全，不装以保持构建缓存稳定。
+RUN apt-retry.sh ca-certificates python3 python3-pip python3-venv \
+    && if [ "$(dpkg --print-architecture)" != "amd64" ]; then \
+         apt-retry.sh build-essential python3-dev; \
+       fi
 
 WORKDIR /build
 COPY requirements.txt ./
